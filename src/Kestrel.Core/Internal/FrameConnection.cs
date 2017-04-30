@@ -11,7 +11,9 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.Extensions.Logging;
@@ -24,6 +26,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
         private List<IAdaptedConnection> _adaptedConnections;
         private readonly TaskCompletionSource<object> _socketClosedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
         private Frame _frame;
+        private Http2Connection _http2Connection;
 
         private long _lastTimestamp;
         private long _timeoutTimestamp = long.MaxValue;
@@ -123,7 +126,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
                         adaptedPipelineTask = adaptedPipeline.RunAsync(stream);
                     }
 
-                    await _frame.ProcessRequestsAsync();
+                    var applicationProtocolFeature = _frame.ConnectionFeatures.Get<ITlsApplicationProtocolFeature>();
+                    if (applicationProtocolFeature?.ApplicationProtocol == "h2")
+                    {
+                        _http2Connection = new Http2Connection(new Http2ConnectionContext
+                        {
+                            ConnectionId = _context.ConnectionId,
+                            ServiceContext  = _context.ServiceContext,
+                            ConnectionInformation = _context.ConnectionInformation,
+                            Input = input,
+                            Output = output
+                        });
+
+                        await _http2Connection.ProcessAsync(application);
+                    }
+                    else
+                    {
+                        await _frame.ProcessRequestsAsync();
+                    }
+
                     await adaptedPipelineTask;
                     await _socketClosedTcs.Task;
                 }
@@ -170,6 +191,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
 
             // Abort the connection (if not already aborted)
             _frame.Abort(ex);
+            _http2Connection?.Abort(ex);
 
             _socketClosedTcs.TrySetResult(null);
         }
@@ -179,6 +201,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
             Debug.Assert(_frame != null, $"{nameof(_frame)} is null");
 
             _frame.Stop();
+            _http2Connection?.Stop();
 
             return _lifetimeTask;
         }
@@ -189,6 +212,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
 
             // Abort the connection (if not already aborted)
             _frame.Abort(ex);
+            _http2Connection?.Abort(ex);
         }
 
         public Task AbortAsync(Exception ex)
@@ -197,6 +221,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
 
             // Abort the connection (if not already aborted)
             _frame.Abort(ex);
+            _http2Connection?.Abort(ex);
 
             return _lifetimeTask;
         }

@@ -535,7 +535,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         public async Task StartRequestProcessingCreatesLogScopeWithConnectionId()
         {
             _frameConnection.StartRequestProcessing(new DummyApplication());
-            
+
             var scopeObjects = ((TestKestrelTrace)_frameConnectionContext.ServiceContext.Log)
                                     .Logger
                                     .Scopes
