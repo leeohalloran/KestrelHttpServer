@@ -12,9 +12,5 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal
         string ConnectionId { get; }
         IPipeWriter Input { get; }
         IPipeReader Output { get; }
-
-        // TODO: Remove these (https://github.com/aspnet/KestrelHttpServer/issues/1772)
-        void OnConnectionClosed(Exception ex);
-        void Abort(Exception ex);
     }
 }

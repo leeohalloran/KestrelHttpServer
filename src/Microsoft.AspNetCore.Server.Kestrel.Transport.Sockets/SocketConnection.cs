@@ -131,7 +131,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets
             }
             finally
             {
-                _connectionContext.Abort(error);
                 _input.Complete(error);
             }
         }
@@ -225,7 +224,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets
             }
             finally
             {
-                _connectionContext.OnConnectionClosed(error);
                 _output.Complete(error);
             }
         }

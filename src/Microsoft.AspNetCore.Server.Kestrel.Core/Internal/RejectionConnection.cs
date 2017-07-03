@@ -33,14 +33,5 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
             _input.Reader.Complete();
             _output.Writer.Complete();
         }
-
-        // TODO: Remove these (https://github.com/aspnet/KestrelHttpServer/issues/1772)
-        void IConnectionContext.OnConnectionClosed(Exception ex)
-        {
-        }
-
-        void IConnectionContext.Abort(Exception ex)
-        {
-        }
     }
 }

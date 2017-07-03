@@ -40,12 +40,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
         public FrameConnection(FrameConnectionContext context)
         {
             _context = context;
+
+            _context.Input?.Reader.OnWriterCompleted(Abort, this);
+            _context.Output?.Writer.OnReaderCompleted(OnConnectionClosed, this);
         }
 
         // For testing
         internal Frame Frame => _frame;
         internal IDebugger Debugger { get; set; } = DebuggerWrapper.Singleton;
-
 
         public bool TimedOut { get; private set; }
 
@@ -158,14 +160,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
             });
         }
 
-        public void OnConnectionClosed(Exception ex)
+        private static void OnConnectionClosed(Exception ex, object state)
         {
-            Debug.Assert(_frame != null, $"{nameof(_frame)} is null");
+            var frameConnection = (FrameConnection)state;
+
+            Debug.Assert(frameConnection._frame != null, $"{nameof(_frame)} is null");
 
             // Abort the connection (if not already aborted)
-            _frame.Abort(ex);
+            frameConnection._frame.Abort(ex);
 
-            _socketClosedTcs.TrySetResult(null);
+            frameConnection._socketClosedTcs.TrySetResult(null);
         }
 
         public Task StopAsync()
@@ -177,12 +181,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal
             return _lifetimeTask;
         }
 
-        public void Abort(Exception ex)
+        private static void Abort(Exception ex, object state)
         {
-            Debug.Assert(_frame != null, $"{nameof(_frame)} is null");
+            var frameConnection = (FrameConnection)state;
+
+            Debug.Assert(frameConnection._frame != null, $"{nameof(_frame)} is null");
 
             // Abort the connection (if not already aborted)
-            _frame.Abort(ex);
+            frameConnection._frame.Abort(ex);
         }
 
         public Task AbortAsync(Exception ex)

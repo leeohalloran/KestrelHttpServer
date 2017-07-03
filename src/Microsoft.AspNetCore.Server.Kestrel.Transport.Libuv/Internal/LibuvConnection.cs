@@ -70,7 +70,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     // Now, complete the input so that no more reads can happen
                     Input.Complete(new ConnectionAbortedException());
                     _connectionContext.Output.Complete();
-                    _connectionContext.OnConnectionClosed(ex: null);
                 }
                 catch (UvException ex)
                 {
@@ -78,7 +77,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                     Input.Complete(ioEx);
                     _connectionContext.Output.Complete(ioEx);
-                    _connectionContext.OnConnectionClosed(ioEx);
                 }
                 finally
                 {
@@ -175,7 +173,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     }
                 }
 
-                _connectionContext.Abort(error);
                 // Complete after aborting the connection
                 Input.Complete(error);
             }
@@ -213,7 +210,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 Log.ConnectionReadFin(ConnectionId);
                 var error = new IOException(ex.Message, ex);
 
-                _connectionContext.Abort(error);
                 Input.Complete(error);
             }
         }
