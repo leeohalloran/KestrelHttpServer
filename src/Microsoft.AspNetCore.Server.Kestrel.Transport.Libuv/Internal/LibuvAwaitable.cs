@@ -20,16 +20,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         private int _status;
 
         public static readonly Action<TRequest, int, UvException, object> Callback = (req, status, error, state) =>
-        {
-            var awaitable = (LibuvAwaitable<TRequest>)state;
-
-            awaitable._exception = error;
-            awaitable._status = status;
-
-            var continuation = Interlocked.Exchange(ref awaitable._callback, _callbackCompleted);
-
-            continuation?.Invoke();
-        };
+            ((LibuvAwaitable<TRequest>)state).Complete(error, status);
 
         public LibuvAwaitable<TRequest> GetAwaiter() => this;
         public bool IsCompleted => _callback == _callbackCompleted;
@@ -65,6 +56,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         public void UnsafeOnCompleted(Action continuation)
         {
             OnCompleted(continuation);
+        }
+
+        public void Cancel() => Complete(new UvException("canceled", 1), 1);
+
+        private void Complete(UvException exception, int status)
+        {
+            _exception = exception;
+            _status = status;
+
+            var continuation = Interlocked.Exchange(ref _callback, _callbackCompleted);
+
+            continuation?.Invoke();
         }
     }
 
