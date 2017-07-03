@@ -17,6 +17,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         private readonly ILibuvTrace _log;
         private readonly IPipeReader _pipe;
 
+        private LibuvAwaitable<UvWriteReq> _awaitable;
+
         public LibuvOutputConsumer(
             IPipeReader pipe,
             LibuvThread thread,
@@ -29,6 +31,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             _socket = socket;
             _connectionId = connectionId;
             _log = log;
+
+            _pipe.OnWriterCompleted(CancelCurrentWriteReq, this);
         }
 
         public async Task WriteOutputAsync()
@@ -54,7 +58,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                         try
                         {
-                            var writeResult = await writeReq.WriteAsync(_socket, buffer);
+                            _awaitable = writeReq.WriteAsync(_socket, buffer);
+                            var writeResult = await _awaitable;
 
                             LogWriteInfo(writeResult.Status, writeResult.Error);
 
@@ -80,6 +85,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     _pipe.Advance(consumed);
                 }
             }
+        }
+
+        private static void CancelCurrentWriteReq(Exception ex, object state)
+        {
+            var libuvOutputConsumer = (LibuvOutputConsumer)state;
+            var awaitable = libuvOutputConsumer._awaitable;
+            awaitable?.Cancel();
         }
 
         private void LogWriteInfo(int status, Exception error)

@@ -23,16 +23,32 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         {
             var awaitable = (LibuvAwaitable<TRequest>)state;
 
-            awaitable._exception = error;
-            awaitable._status = status;
-
             var continuation = Interlocked.Exchange(ref awaitable._callback, _callbackCompleted);
 
-            continuation?.Invoke();
+            if (continuation != _callbackCompleted)
+            {
+                awaitable._exception = error;
+                awaitable._status = status;
+
+                continuation?.Invoke();
+            }
         };
 
         public LibuvAwaitable<TRequest> GetAwaiter() => this;
         public bool IsCompleted => _callback == _callbackCompleted;
+
+        public void Cancel()
+        {
+            var continuation = Interlocked.Exchange(ref _callback, _callbackCompleted);
+
+            if (continuation != _callbackCompleted)
+            {
+                _exception = new UvException("cancled", 1);
+                _status = 1;
+
+                continuation?.Invoke();
+            }
+        }
 
         public UvWriteResult GetResult()
         {
