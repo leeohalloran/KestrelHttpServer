@@ -2,52 +2,53 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.IO;
-using System.Net.Sockets;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.Tests;
 using Microsoft.AspNetCore.Testing;
+using Microsoft.Extensions.Logging.Testing;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 {
-    public class ConnectionLimitTests
+    public class ConnectionLimitTests : LoggedTest
     {
         [Fact]
         public async Task ResetsCountWhenConnectionClosed()
         {
-            var requestTcs = new TaskCompletionSource<object>();
-            var releasedTcs = new TaskCompletionSource<object>();
-            var lockedTcs = new TaskCompletionSource<bool>();
-            var (serviceContext, counter) = SetupMaxConnections(max: 1);
+            var requestTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releasedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var lockedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var counter = new EventRaisingResourceCounter(ResourceCounter.Quota(1));
             counter.OnLock += (s, e) => lockedTcs.TrySetResult(e);
             counter.OnRelease += (s, e) => releasedTcs.TrySetResult(null);
 
-            using (var server = new TestServer(async context =>
+            using (var server = CreateServerWithMaxConnections(async context =>
             {
                 await context.Response.WriteAsync("Hello");
                 await requestTcs.Task;
-            }, serviceContext))
+            }, counter))
             using (var connection = server.CreateConnection())
             {
                 await connection.SendEmptyGetAsKeepAlive(); ;
                 await connection.Receive("HTTP/1.1 200 OK");
-                Assert.True(await lockedTcs.Task.TimeoutAfter(TimeSpan.FromSeconds(10)));
+                Assert.True(await lockedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout));
                 requestTcs.TrySetResult(null);
             }
 
-            await releasedTcs.Task.TimeoutAfter(TimeSpan.FromSeconds(10));
+            await releasedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout);
         }
 
         [Fact]
         public async Task UpgradedConnectionsCountsAgainstDifferentLimit()
         {
-            var (serviceContext, _) = SetupMaxConnections(max: 1);
-            using (var server = new TestServer(async context =>
+            using (var server = CreateServerWithMaxConnections(async context =>
             {
                 var feature = context.Features.Get<IHttpUpgradeFeature>();
                 if (feature.IsUpgradableRequest)
@@ -59,7 +60,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         await Task.Delay(100);
                     }
                 }
-            }, serviceContext))
+            }, max: 1))
             using (var disposables = new DisposableStack<TestConnection>())
             {
                 var upgraded = server.CreateConnection();
@@ -81,10 +82,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     {
                         // this may throw IOException, depending on how fast Kestrel closes the socket
                         await rejected.SendEmptyGetAsKeepAlive();
-                    } catch { }
+                    }
+                    catch { }
 
                     // connection should close without sending any data
-                    await rejected.WaitForConnectionClose().TimeoutAfter(TimeSpan.FromSeconds(15));
+                    await rejected.WaitForConnectionClose().TimeoutAfter(TestConstants.DefaultTimeout);
                 }
             }
         }
@@ -93,14 +95,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         public async Task RejectsConnectionsWhenLimitReached()
         {
             const int max = 10;
-            var (serviceContext, _) = SetupMaxConnections(max);
-            var requestTcs = new TaskCompletionSource<object>();
+            var requestTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            using (var server = new TestServer(async context =>
+            using (var server = CreateServerWithMaxConnections(async context =>
             {
                 await context.Response.WriteAsync("Hello");
                 await requestTcs.Task;
-            }, serviceContext))
+            }, max))
             using (var disposables = new DisposableStack<TestConnection>())
             {
                 for (var i = 0; i < max; i++)
@@ -121,10 +122,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         {
                             // this may throw IOException, depending on how fast Kestrel closes the socket
                             await connection.SendEmptyGetAsKeepAlive();
-                        } catch { }
+                        }
+                        catch { }
 
                         // connection should close without sending any data
-                        await connection.WaitForConnectionClose().TimeoutAfter(TimeSpan.FromSeconds(15));
+                        await connection.WaitForConnectionClose().TimeoutAfter(TestConstants.DefaultTimeout);
                     }
                 }
 
@@ -132,16 +134,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             }
         }
 
-        [Fact]
+        [Fact(Skip = "https://github.com/aspnet/KestrelHttpServer/issues/2282")]
         public async Task ConnectionCountingReturnsToZero()
         {
             const int count = 100;
             var opened = 0;
             var closed = 0;
-            var openedTcs = new TaskCompletionSource<object>();
-            var closedTcs = new TaskCompletionSource<object>();
+            var openedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var closedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var (serviceContext, counter) = SetupMaxConnections(uint.MaxValue);
+            var counter = new EventRaisingResourceCounter(ResourceCounter.Quota(uint.MaxValue));
 
             counter.OnLock += (o, e) =>
             {
@@ -159,7 +161,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 }
             };
 
-            using (var server = new TestServer(_ => Task.CompletedTask, serviceContext))
+            using (var server = CreateServerWithMaxConnections(_ => Task.CompletedTask, counter))
             {
                 // open a bunch of connections in parallel
                 Parallel.For(0, count, async i =>
@@ -174,7 +176,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     }
                     catch (Exception ex)
                     {
-                        closedTcs.TrySetException(ex);
+                        openedTcs.TrySetException(ex);
                     }
                 });
 
@@ -187,12 +189,24 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             }
         }
 
-        private (TestServiceContext serviceContext, EventRaisingResourceCounter counter) SetupMaxConnections(long max)
+        private TestServer CreateServerWithMaxConnections(RequestDelegate app, long max)
         {
-            var counter = new EventRaisingResourceCounter(ResourceCounter.Quota(max));
-            var serviceContext = new TestServiceContext();
-            serviceContext.ConnectionManager = new FrameConnectionManager(serviceContext.Log, counter, ResourceCounter.Unlimited);
-            return (serviceContext, counter);
+            var serviceContext = new TestServiceContext(LoggerFactory);
+            serviceContext.ServerOptions.Limits.MaxConcurrentConnections = max;
+            return new TestServer(app, serviceContext);
+        }
+
+        private TestServer CreateServerWithMaxConnections(RequestDelegate app, ResourceCounter concurrentConnectionCounter)
+        {
+            var serviceContext = new TestServiceContext(LoggerFactory);
+            var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
+            listenOptions.Use(next =>
+            {
+                var middleware = new ConnectionLimitMiddleware(next, concurrentConnectionCounter, serviceContext.Log);
+                return middleware.OnConnectionAsync;
+            });
+
+            return new TestServer(app, serviceContext, listenOptions);
         }
     }
 }

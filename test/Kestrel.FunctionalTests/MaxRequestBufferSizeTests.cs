@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,13 +14,12 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 {
-    public class MaxRequestBufferSizeTests
+    public class MaxRequestBufferSizeTests : LoggedTest
     {
         private const int _dataLength = 20 * 1024 * 1024;
 
@@ -29,13 +29,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             $"Content-Length: {_dataLength}\r\n",
             "\r\n"
         };
-
-        private readonly Action<ILoggingBuilder> _configureLoggingDelegate;
-
-        public MaxRequestBufferSizeTests(ITestOutputHelper output)
-        {
-            _configureLoggingDelegate = builder => builder.AddXunit(output);
-        }
 
         public static IEnumerable<object[]> LargeUploadData
         {
@@ -94,14 +87,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var bytesWrittenPollingInterval = TimeSpan.FromMilliseconds(bytesWrittenTimeout.TotalMilliseconds / 10);
             var maxSendSize = 4096;
 
-            // Initialize data with random bytes
-            (new Random()).NextBytes(data);
-
-            var startReadingRequestBody = new TaskCompletionSource<object>();
-            var clientFinishedSendingRequestBody = new TaskCompletionSource<object>();
+            var startReadingRequestBody = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var clientFinishedSendingRequestBody = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             var lastBytesWritten = DateTime.MaxValue;
 
-            using (var host = StartWebHost(maxRequestBufferSize, data, connectionAdapter, startReadingRequestBody, clientFinishedSendingRequestBody))
+            var memoryPoolFactory = new DiagnosticMemoryPoolFactory(allowLateReturn: true);
+
+            using (var host = StartWebHost(maxRequestBufferSize, data, connectionAdapter, startReadingRequestBody, clientFinishedSendingRequestBody, memoryPoolFactory.Create))
             {
                 var port = host.GetPort();
                 using (var socket = CreateSocket(port))
@@ -178,6 +170,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     }
                 }
             }
+
+            await memoryPoolFactory.WhenAllBlocksReturned(TestConstants.DefaultTimeout);
         }
 
         [Fact]
@@ -189,11 +183,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var bytesWrittenPollingInterval = TimeSpan.FromMilliseconds(bytesWrittenTimeout.TotalMilliseconds / 10);
             var maxSendSize = 4096;
 
-            var startReadingRequestBody = new TaskCompletionSource<object>();
-            var clientFinishedSendingRequestBody = new TaskCompletionSource<object>();
+            var startReadingRequestBody = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var clientFinishedSendingRequestBody = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             var lastBytesWritten = DateTime.MaxValue;
 
-            using (var host = StartWebHost(16 * 1024, data, false, startReadingRequestBody, clientFinishedSendingRequestBody))
+            var memoryPoolFactory = new DiagnosticMemoryPoolFactory(allowLateReturn: true);
+
+            using (var host = StartWebHost(16 * 1024, data, false, startReadingRequestBody, clientFinishedSendingRequestBody, memoryPoolFactory.Create))
             {
                 var port = host.GetPort();
                 using (var socket = CreateSocket(port))
@@ -250,16 +246,21 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     host.Dispose();
                 }
             }
+            // Allow appfunc to unblock
+            startReadingRequestBody.SetResult(null);
+            clientFinishedSendingRequestBody.SetResult(null);
+            await memoryPoolFactory.WhenAllBlocksReturned(TestConstants.DefaultTimeout);
         }
 
         private IWebHost StartWebHost(long? maxRequestBufferSize,
             byte[] expectedBody,
             bool useConnectionAdapter,
             TaskCompletionSource<object> startReadingRequestBody,
-            TaskCompletionSource<object> clientFinishedSendingRequestBody)
+            TaskCompletionSource<object> clientFinishedSendingRequestBody,
+            Func<MemoryPool<byte>> memoryPoolFactory = null)
         {
-            var host = new WebHostBuilder()
-                .ConfigureLogging(_configureLoggingDelegate)
+            var host = TransportSelector.GetWebHostBuilder(memoryPoolFactory)
+                .ConfigureServices(AddTestLogging)
                 .UseKestrel(options =>
                 {
                     options.Listen(new IPEndPoint(IPAddress.Loopback, 0), listenOptions =>
@@ -306,17 +307,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                         await context.Response.WriteAsync("Client sent more bytes than expectedBody.Length");
                         return;
-                    }
-
-                    // Verify bytes received match expectedBody
-                    for (int i = 0; i < expectedBody.Length; i++)
-                    {
-                        if (buffer[i] != expectedBody[i])
-                        {
-                            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                            await context.Response.WriteAsync($"Bytes received do not match expectedBody at position {i}");
-                            return;
-                        }
                     }
 
                     await context.Response.WriteAsync($"bytesRead: {bytesRead.ToString()}");

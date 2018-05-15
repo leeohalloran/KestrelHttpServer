@@ -3,20 +3,20 @@
 
 using System;
 using System.Buffers;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Pipelines;
+using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Protocols;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 {
-    public partial class LibuvConnection : LibuvConnectionContext
+    public partial class LibuvConnection : TransportConnection
     {
-        private const int MinAllocBufferSize = 2048;
+        private static readonly int MinAllocBufferSize = KestrelMemoryPool.MinimumSegmentSize / 2;
 
         private static readonly Action<UvStreamHandle, int, object> _readCallback =
             (handle, status, state) => ReadCallback(handle, status, state);
@@ -25,11 +25,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             (handle, suggestedsize, state) => AllocCallback(handle, suggestedsize, state);
 
         private readonly UvStreamHandle _socket;
+        private readonly CancellationTokenSource _connectionClosedTokenSource = new CancellationTokenSource();
 
-        private WritableBuffer? _currentWritableBuffer;
-        private BufferHandle _bufferHandle;
+        private MemoryHandle _bufferHandle;
 
-        public LibuvConnection(ListenerContext context, UvStreamHandle socket) : base(context)
+        public LibuvConnection(UvStreamHandle socket, ILibuvTrace log, LibuvThread thread)
         {
             _socket = socket;
 
@@ -43,24 +43,27 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                 LocalAddress = localEndPoint.Address;
                 LocalPort = localEndPoint.Port;
+
+                ConnectionClosed = _connectionClosedTokenSource.Token;
             }
+
+            Log = log;
+            Thread = thread;
         }
 
-        public IPipeWriter Input => Application.Connection.Output;
-        public IPipeReader Output => Application.Connection.Input;
-
         public LibuvOutputConsumer OutputConsumer { get; set; }
+        private ILibuvTrace Log { get; }
+        private LibuvThread Thread { get; }
+        public override MemoryPool<byte> MemoryPool => Thread.MemoryPool;
+        public override PipeScheduler InputWriterScheduler => Thread;
+        public override PipeScheduler OutputReaderScheduler => Thread;
 
-        private ILibuvTrace Log => ListenerContext.TransportContext.Log;
-        private IConnectionHandler ConnectionHandler => ListenerContext.TransportContext.ConnectionHandler;
-        private LibuvThread Thread => ListenerContext.Thread;
+        public override long TotalBytesWritten => OutputConsumer?.TotalBytesWritten ?? 0;
 
         public async Task Start()
         {
             try
             {
-                ConnectionHandler.OnConnection(this);
-
                 OutputConsumer = new LibuvOutputConsumer(Output, Thread, _socket, ConnectionId, Log);
 
                 StartReading();
@@ -83,7 +86,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     // Now, complete the input so that no more reads can happen
                     Input.Complete(error ?? new ConnectionAbortedException());
                     Output.Complete(error);
-                    Application.OnConnectionClosed(error);
 
                     // Make sure it isn't possible for a paused read to resume reading after calling uv_close
                     // on the stream handle
@@ -94,12 +96,19 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                     // We're done with the socket now
                     _socket.Dispose();
+                    ThreadPool.QueueUserWorkItem(state => ((LibuvConnection)state).CancelConnectionClosedToken(), this);
                 }
             }
             catch (Exception e)
             {
                 Log.LogCritical(0, e, $"{nameof(LibuvConnection)}.{nameof(Start)}() {ConnectionId}");
             }
+        }
+
+        public override void Abort()
+        {
+            // This cancels any pending I/O.
+            Thread.Post(s => s.Dispose(), _socket);
         }
 
         // Called on Libuv thread
@@ -110,13 +119,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         private unsafe LibuvFunctions.uv_buf_t OnAlloc(UvStreamHandle handle, int suggestedSize)
         {
-            Debug.Assert(_currentWritableBuffer == null);
-            var currentWritableBuffer = Input.Alloc(MinAllocBufferSize);
-            _currentWritableBuffer = currentWritableBuffer;
+            var currentWritableBuffer = Input.GetMemory(MinAllocBufferSize);
+            _bufferHandle = currentWritableBuffer.Pin();
 
-            _bufferHandle = currentWritableBuffer.Buffer.Retain(true);
-
-            return handle.Libuv.buf_init((IntPtr)_bufferHandle.PinnedPointer, currentWritableBuffer.Buffer.Length);
+            return handle.Libuv.buf_init((IntPtr)_bufferHandle.Pointer, currentWritableBuffer.Length);
         }
 
         private static void ReadCallback(UvStreamHandle handle, int status, object state)
@@ -126,21 +132,19 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         private void OnRead(UvStreamHandle handle, int status)
         {
+            // Cleanup state from last OnAlloc. This is safe even if OnAlloc wasn't called.
+            _bufferHandle.Dispose();
             if (status == 0)
             {
                 // EAGAIN/EWOULDBLOCK so just return the buffer.
                 // http://docs.libuv.org/en/v1.x/stream.html#c.uv_read_cb
-                Debug.Assert(_currentWritableBuffer != null);
-                _currentWritableBuffer.Value.Commit();
             }
             else if (status > 0)
             {
                 Log.ConnectionRead(ConnectionId, status);
 
-                Debug.Assert(_currentWritableBuffer != null);
-                var currentWritableBuffer = _currentWritableBuffer.Value;
-                currentWritableBuffer.Advance(status);
-                var flushTask = currentWritableBuffer.FlushAsync();
+                Input.Advance(status);
+                var flushTask = Input.FlushAsync();
 
                 if (!flushTask.IsCompleted)
                 {
@@ -152,7 +156,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             else
             {
                 // Given a negative status, it's possible that OnAlloc wasn't called.
-                _currentWritableBuffer?.Commit();
                 _socket.ReadStop();
 
                 IOException error = null;
@@ -166,7 +169,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     handle.Libuv.Check(status, out var uvError);
 
                     // Log connection resets at a lower (Debug) level.
-                    if (status == LibuvConstants.ECONNRESET)
+                    if (LibuvConstants.IsConnectionReset(status))
                     {
                         Log.ConnectionReset(ConnectionId);
                         error = new ConnectionResetException(uvError.Message, uvError);
@@ -178,17 +181,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     }
                 }
 
-                Application.Abort(error);
                 // Complete after aborting the connection
                 Input.Complete(error);
             }
-
-            // Cleanup state from last OnAlloc. This is safe even if OnAlloc wasn't called.
-            _currentWritableBuffer = null;
-            _bufferHandle.Dispose();
         }
 
-        private async Task ApplyBackpressureAsync(WritableBufferAwaitable flushTask)
+        private async Task ApplyBackpressureAsync(ValueTask<FlushResult> flushTask)
         {
             Log.ConnectionPause(ConnectionId);
             _socket.ReadStop();
@@ -196,7 +194,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             var result = await flushTask;
 
             // If the reader isn't complete or cancelled then resume reading
-            if (!result.IsCompleted && !result.IsCancelled)
+            if (!result.IsCompleted && !result.IsCanceled)
             {
                 Log.ConnectionResume(ConnectionId);
                 StartReading();
@@ -216,8 +214,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 Log.ConnectionReadFin(ConnectionId);
                 var error = new IOException(ex.Message, ex);
 
-                Application.Abort(error);
                 Input.Complete(error);
+            }
+        }
+
+        private void CancelConnectionClosedToken()
+        {
+            try
+            {
+                _connectionClosedTokenSource.Cancel();
+                _connectionClosedTokenSource.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.LogError(0, ex, $"Unexpected exception in {nameof(LibuvConnection)}.{nameof(CancelConnectionClosedToken)}.");
             }
         }
     }

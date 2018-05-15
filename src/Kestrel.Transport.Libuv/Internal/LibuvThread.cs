@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipelines;
@@ -9,12 +10,13 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 {
-    public class LibuvThread : IScheduler
+    public class LibuvThread : PipeScheduler
     {
         // maximum times the work queues swapped and are processed in a single pass
         // as completing a task may immediately have write data to put on the network
@@ -32,10 +34,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         private Queue<CloseHandle> _closeHandleAdding = new Queue<CloseHandle>(256);
         private Queue<CloseHandle> _closeHandleRunning = new Queue<CloseHandle>(256);
         private readonly object _workSync = new object();
+        private readonly object _closeHandleSync = new object();
         private readonly object _startSync = new object();
         private bool _stopImmediate = false;
         private bool _initCompleted = false;
-        private ExceptionDispatchInfo _closeError;
+        private Exception _closeError;
         private readonly ILibuvTrace _log;
 
         public LibuvThread(LibuvTransport transport)
@@ -45,8 +48,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             _log = transport.Log;
             _loop = new UvLoopHandle(_log);
             _post = new UvAsyncHandle(_log);
+
             _thread = new Thread(ThreadStart);
+#if !INNER_LOOP
             _thread.Name = nameof(LibuvThread);
+#endif
+
 #if !DEBUG
             // Mark the thread as being as unimportant to keeping the process alive.
             // Don't do this for debug builds, so we know if the thread isn't terminating.
@@ -54,7 +61,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 #endif
             QueueCloseHandle = PostCloseHandle;
             QueueCloseAsyncHandle = EnqueueCloseHandle;
-            PipeFactory = new PipeFactory();
+            MemoryPool = transport.TransportOptions.MemoryPoolFactory();
             WriteReqPool = new WriteReqPool(this, _log);
         }
 
@@ -67,7 +74,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         public UvLoopHandle Loop { get { return _loop; } }
 
-        public PipeFactory PipeFactory { get; }
+        public MemoryPool<byte> MemoryPool { get; }
 
         public WriteReqPool WriteReqPool { get; }
 
@@ -75,7 +82,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         public List<WeakReference> Requests { get; } = new List<WeakReference>();
 #endif
 
-        public ExceptionDispatchInfo FatalError { get { return _closeError; } }
+        public Exception FatalError => _closeError;
 
         public Action<Action<IntPtr>, IntPtr> QueueCloseHandle { get; }
 
@@ -126,10 +133,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 }
             }
 
-            _closeError?.Throw();
+            if (_closeError != null)
+            {
+                ExceptionDispatchInfo.Capture(_closeError).Throw();
+            }
         }
 
-#if DEBUG
+#if DEBUG && !INNER_LOOP
         private void CheckUvReqLeaks()
         {
             GC.Collect();
@@ -170,16 +180,33 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         public void Post<T>(Action<T> callback, T state)
         {
+            // Handle is closed to don't bother scheduling anything
+            if (_post.IsClosed)
+            {
+                return;
+            }
+
+            var work = new Work
+            {
+                CallbackAdapter = CallbackAdapter<T>.PostCallbackAdapter,
+                Callback = callback,
+                // TODO: This boxes
+                State = state
+            };
+
             lock (_workSync)
             {
-                _workAdding.Enqueue(new Work
-                {
-                    CallbackAdapter = CallbackAdapter<T>.PostCallbackAdapter,
-                    Callback = callback,
-                    State = state
-                });
+                _workAdding.Enqueue(work);
             }
-            _post.Send();
+
+            try
+            {
+                _post.Send();
+            }
+            catch (ObjectDisposedException)
+            {
+                // There's an inherent race here where we're in the middle of shutdown
+            }
         }
 
         private void Post(Action<LibuvThread> callback)
@@ -189,18 +216,34 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         public Task PostAsync<T>(Action<T> callback, T state)
         {
+            // Handle is closed to don't bother scheduling anything
+            if (_post.IsClosed)
+            {
+                return Task.CompletedTask;
+            }
+
             var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var work = new Work
+            {
+                CallbackAdapter = CallbackAdapter<T>.PostAsyncCallbackAdapter,
+                Callback = callback,
+                State = state,
+                Completion = tcs
+            };
+
             lock (_workSync)
             {
-                _workAdding.Enqueue(new Work
-                {
-                    CallbackAdapter = CallbackAdapter<T>.PostAsyncCallbackAdapter,
-                    Callback = callback,
-                    State = state,
-                    Completion = tcs
-                });
+                _workAdding.Enqueue(work);
             }
-            _post.Send();
+
+            try
+            {
+                _post.Send();
+            }
+            catch (ObjectDisposedException)
+            {
+                // There's an inherent race here where we're in the middle of shutdown
+            }
             return tcs.Task;
         }
 
@@ -226,9 +269,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
         private void EnqueueCloseHandle(Action<IntPtr> callback, IntPtr handle)
         {
-            lock (_workSync)
+            var closeHandle = new CloseHandle { Callback = callback, Handle = handle };
+            lock (_closeHandleSync)
             {
-                _closeHandleAdding.Enqueue(new CloseHandle { Callback = callback, Handle = handle });
+                _closeHandleAdding.Enqueue(closeHandle);
             }
         }
 
@@ -264,7 +308,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 _post.Reference();
                 _post.Dispose();
 
-                // We need this walk because we call ReadStop on on accepted connections when there's back pressure
+                // We need this walk because we call ReadStop on accepted connections when there's back pressure
                 // Calling ReadStop makes the handle as in-active which means the loop can
                 // end while there's still valid handles around. This makes loop.Dispose throw
                 // with an EBUSY. To avoid that, we walk all of the handles and dispose them.
@@ -282,18 +326,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             }
             catch (Exception ex)
             {
-                _closeError = ExceptionDispatchInfo.Capture(ex);
+                _closeError = ex;
                 // Request shutdown so we can rethrow this exception
                 // in Stop which should be observable.
                 _appLifetime.StopApplication();
             }
             finally
             {
-                PipeFactory.Dispose();
+                try
+                {
+                    MemoryPool.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _closeError = _closeError == null ? ex : new AggregateException(_closeError, ex);
+                }
                 WriteReqPool.Dispose();
                 _threadTcs.SetResult(null);
 
-#if DEBUG
+#if DEBUG && !INNER_LOOP
                 // Check for handle leaks after disposing everything
                 CheckUvReqLeaks();
 #endif
@@ -352,7 +403,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         private bool DoPostCloseHandle()
         {
             Queue<CloseHandle> queue;
-            lock (_workSync)
+            lock (_closeHandleSync)
             {
                 queue = _closeHandleAdding;
                 _closeHandleAdding = _closeHandleRunning;
@@ -383,7 +434,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             return await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false) == task;
         }
 
-        public void Schedule(Action<object> action, object state)
+        public override void Schedule(Action<object> action, object state)
         {
             Post(action, state);
         }

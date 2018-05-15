@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 {
@@ -15,26 +17,30 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         private static byte[] _numericBytesScratch;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static Span<byte> ToSpan(this ReadableBuffer buffer)
+        public static ReadOnlySpan<byte> ToSpan(this ReadOnlySequence<byte> buffer)
         {
-            if (buffer.IsSingleSpan)
+            if (buffer.IsSingleSegment)
             {
                 return buffer.First.Span;
             }
             return buffer.ToArray();
         }
 
-        public static ArraySegment<byte> GetArray(this Buffer<byte> buffer)
+        public static ArraySegment<byte> GetArray(this Memory<byte> buffer)
         {
-            ArraySegment<byte> result;
-            if (!buffer.TryGetArray(out result))
+            return ((ReadOnlyMemory<byte>)buffer).GetArray();
+        }
+
+        public static ArraySegment<byte> GetArray(this ReadOnlyMemory<byte> memory)
+        {
+            if (!MemoryMarshal.TryGetArray(memory, out var result))
             {
                 throw new InvalidOperationException("Buffer backed by array was expected");
             }
             return result;
         }
 
-        public unsafe static void WriteAsciiNoValidation(ref WritableBufferWriter buffer, string data)
+        internal static unsafe void WriteAsciiNoValidation(ref this CountingBufferWriter<PipeWriter> buffer, string data)
         {
             if (string.IsNullOrEmpty(data))
             {
@@ -49,7 +55,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             if (sourceLength <= destLength)
             {
                 fixed (char* input = data)
-                fixed (byte* output = &dest.DangerousGetPinnableReference())
+                fixed (byte* output = &MemoryMarshal.GetReference(dest))
                 {
                     EncodeAsciiCharsToBytes(input, output, sourceLength);
                 }
@@ -63,7 +69,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe static void WriteNumeric(ref WritableBufferWriter buffer, ulong number)
+        internal static unsafe void WriteNumeric(ref this CountingBufferWriter<PipeWriter> buffer, ulong number)
         {
             const byte AsciiDigitStart = (byte)'0';
 
@@ -72,7 +78,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
             // Fast path, try copying to the available memory directly
             var simpleWrite = true;
-            fixed (byte* output = &span.DangerousGetPinnableReference())
+            fixed (byte* output = &MemoryMarshal.GetReference(span))
             {
                 var start = output;
                 if (number < 10 && bytesLeftInBlock >= 1)
@@ -113,7 +119,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static void WriteNumericMultiWrite(ref WritableBufferWriter buffer, ulong number)
+        private static void WriteNumericMultiWrite(ref this CountingBufferWriter<PipeWriter> buffer, ulong number)
         {
             const byte AsciiDigitStart = (byte)'0';
 
@@ -130,11 +136,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             while (value != 0);
 
             var length = _maxULongByteLength - position;
-            buffer.Write(byteBuffer, position, length);
+            buffer.Write(new ReadOnlySpan<byte>(byteBuffer, position, length));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private unsafe static void WriteAsciiMultiWrite(ref WritableBufferWriter buffer, string data)
+        private unsafe static void WriteAsciiMultiWrite(ref this CountingBufferWriter<PipeWriter> buffer, string data)
         {
             var remaining = data.Length;
 
@@ -152,7 +158,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
                         continue;
                     }
 
-                    fixed (byte* output = &buffer.Span.DangerousGetPinnableReference())
+                    fixed (byte* output = &MemoryMarshal.GetReference(buffer.Span))
                     {
                         EncodeAsciiCharsToBytes(inputSlice, output, writable);
                     }
@@ -165,7 +171,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             }
         }
 
-        private unsafe static void EncodeAsciiCharsToBytes(char* input, byte* output, int length)
+        private static unsafe void EncodeAsciiCharsToBytes(char* input, byte* output, int length)
         {
             // Note: Not BIGENDIAN or check for non-ascii
             const int Shift16Shift24 = (1 << 16) | (1 << 24);

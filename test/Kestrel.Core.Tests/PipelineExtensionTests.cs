@@ -2,9 +2,11 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
@@ -14,17 +16,19 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         // ulong.MaxValue.ToString().Length
         private const int _ulongMaxValueLength = 20;
 
-        private readonly IPipe _pipe;
-        private readonly PipeFactory _pipeFactory = new PipeFactory();
+        private readonly Pipe _pipe;
+        private readonly MemoryPool<byte> _memoryPool = KestrelMemoryPool.Create();
 
         public PipelineExtensionTests()
         {
-            _pipe = _pipeFactory.Create();
+            _pipe = new Pipe(new PipeOptions(_memoryPool, readerScheduler: PipeScheduler.Inline, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false));
         }
 
         public void Dispose()
         {
-            _pipeFactory.Dispose();
+            _pipe.Reader.Complete();
+            _pipe.Writer.Complete();
+            _memoryPool.Dispose();
         }
 
         [Theory]
@@ -33,9 +37,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [InlineData(4_8_15_16_23_42)]
         public void WritesNumericToAscii(ulong number)
         {
-            var writerBuffer = _pipe.Writer.Alloc();
-            var writer = new WritableBufferWriter(writerBuffer);
-            PipelineExtensions.WriteNumeric(ref writer, number);
+            var writerBuffer = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(writerBuffer);
+            writer.WriteNumeric(number);
+            writer.Commit();
             writerBuffer.FlushAsync().GetAwaiter().GetResult();
 
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
@@ -50,22 +55,22 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [InlineData(_ulongMaxValueLength - 1)]
         public void WritesNumericAcrossSpanBoundaries(int gapSize)
         {
-            var writerBuffer = _pipe.Writer.Alloc(100);
-            var writer = new WritableBufferWriter(writerBuffer);
+            var writerBuffer = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(writerBuffer);
             // almost fill up the first block
             var spacer = new byte[writer.Span.Length - gapSize];
             writer.Write(spacer);
 
             var bufferLength = writer.Span.Length;
-            PipelineExtensions.WriteNumeric(ref writer, ulong.MaxValue);
+            writer.WriteNumeric(ulong.MaxValue);
             Assert.NotEqual(bufferLength, writer.Span.Length);
-
+            writer.Commit();
             writerBuffer.FlushAsync().GetAwaiter().GetResult();
 
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
             var numAsString = ulong.MaxValue.ToString();
             var written = reader.Buffer.Slice(spacer.Length, numAsString.Length);
-            Assert.False(written.IsSingleSpan, "The buffer should cross spans");
+            Assert.False(written.IsSingleSegment, "The buffer should cross spans");
             AssertExtensions.Equal(Encoding.ASCII.GetBytes(numAsString), written.ToArray());
         }
 
@@ -81,10 +86,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [InlineData(null, new byte[0])]
         public void EncodesAsAscii(string input, byte[] expected)
         {
-            var writerBuffer = _pipe.Writer.Alloc();
-            var writer = new WritableBufferWriter(writerBuffer);
-            PipelineExtensions.WriteAsciiNoValidation(ref writer, input);
-            writerBuffer.FlushAsync().GetAwaiter().GetResult();
+            var pipeWriter = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(pipeWriter);
+            writer.WriteAsciiNoValidation(input);
+            writer.Commit();
+            pipeWriter.FlushAsync().GetAwaiter().GetResult();
+            pipeWriter.Complete();
+
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
 
             if (expected.Length > 0)
@@ -108,9 +116,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         {
             // WriteAscii doesn't validate if characters are in the ASCII range
             // but it shouldn't produce more than one byte per character
-            var writerBuffer = _pipe.Writer.Alloc();
-            var writer = new WritableBufferWriter(writerBuffer);
-            PipelineExtensions.WriteAsciiNoValidation(ref writer, input);
+            var writerBuffer = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(writerBuffer);
+            writer.WriteAsciiNoValidation(input);
+            writer.Commit();
             writerBuffer.FlushAsync().GetAwaiter().GetResult();
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
 
@@ -121,12 +130,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         public void WriteAsciiNoValidation()
         {
             const byte maxAscii = 0x7f;
-            var writerBuffer = _pipe.Writer.Alloc();
-            var writer = new WritableBufferWriter(writerBuffer);
+            var writerBuffer = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(writerBuffer);
             for (var i = 0; i < maxAscii; i++)
             {
-                PipelineExtensions.WriteAsciiNoValidation(ref writer, new string((char)i, 1));
+                writer.WriteAsciiNoValidation(new string((char)i, 1));
             }
+            writer.Commit();
             writerBuffer.FlushAsync().GetAwaiter().GetResult();
 
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
@@ -150,22 +160,22 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         public void WritesAsciiAcrossBlockBoundaries(int stringLength, int gapSize)
         {
             var testString = new string(' ', stringLength);
-            var writerBuffer = _pipe.Writer.Alloc(100);
-            var writer = new WritableBufferWriter(writerBuffer);
+            var writerBuffer = _pipe.Writer;
+            var writer = new CountingBufferWriter<PipeWriter>(writerBuffer);
             // almost fill up the first block
             var spacer = new byte[writer.Span.Length - gapSize];
             writer.Write(spacer);
             Assert.Equal(gapSize, writer.Span.Length);
 
             var bufferLength = writer.Span.Length;
-            PipelineExtensions.WriteAsciiNoValidation(ref writer, testString);
+            writer.WriteAsciiNoValidation(testString);
             Assert.NotEqual(bufferLength, writer.Span.Length);
-
+            writer.Commit();
             writerBuffer.FlushAsync().GetAwaiter().GetResult();
 
             var reader = _pipe.Reader.ReadAsync().GetAwaiter().GetResult();
             var written = reader.Buffer.Slice(spacer.Length, stringLength);
-            Assert.False(written.IsSingleSpan, "The buffer should cross spans");
+            Assert.False(written.IsSingleSegment, "The buffer should cross spans");
             AssertExtensions.Equal(Encoding.ASCII.GetBytes(testString), written.ToArray());
         }
     }

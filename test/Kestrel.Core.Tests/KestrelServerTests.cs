@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -20,12 +21,21 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 {
     public class KestrelServerTests
     {
+        private KestrelServerOptions CreateServerOptions()
+        {
+            var serverOptions = new KestrelServerOptions();
+            serverOptions.ApplicationServices = new ServiceCollection()
+                .AddLogging()
+                .BuildServiceProvider();
+            return serverOptions;
+        }
+
         [Fact]
         public void StartWithInvalidAddressThrows()
         {
             var testLogger = new TestApplicationErrorLogger { ThrowOnCriticalErrors = false };
 
-            using (var server = CreateServer(new KestrelServerOptions(), testLogger))
+            using (var server = CreateServer(CreateServerOptions(), testLogger))
             {
                 server.Features.Get<IServerAddressesFeature>().Addresses.Add("http:/asdf");
 
@@ -37,20 +47,57 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         }
 
         [Fact]
-        public void StartWithHttpsAddressThrows()
+        public void StartWithHttpsAddressConfiguresHttpsEndpoints()
         {
-            var testLogger = new TestApplicationErrorLogger { ThrowOnCriticalErrors = false };
-
-            using (var server = CreateServer(new KestrelServerOptions(), testLogger))
+            var options = CreateServerOptions();
+            options.DefaultCertificate = TestResources.GetTestCertificate();
+            using (var server = CreateServer(options))
             {
                 server.Features.Get<IServerAddressesFeature>().Addresses.Add("https://127.0.0.1:0");
 
-                var exception = Assert.Throws<InvalidOperationException>(() => StartDummyApplication(server));
+                StartDummyApplication(server);
 
-                Assert.Equal(
-                    $"HTTPS endpoints can only be configured using {nameof(KestrelServerOptions)}.{nameof(KestrelServerOptions.Listen)}().",
-                    exception.Message);
-                Assert.Equal(1, testLogger.CriticalErrorsLogged);
+                Assert.True(server.Options.ListenOptions.Any());
+                Assert.Contains(server.Options.ListenOptions[0].ConnectionAdapters, adapter => adapter.IsHttps);
+            }
+        }
+
+        [Fact]
+        public void KestrelServerThrowsUsefulExceptionIfDefaultHttpsProviderNotAdded()
+        {
+            var options = CreateServerOptions();
+            options.IsDevCertLoaded = true; // Prevent the system default from being loaded
+            using (var server = CreateServer(options, throwOnCriticalErrors: false))
+            {
+                server.Features.Get<IServerAddressesFeature>().Addresses.Add("https://127.0.0.1:0");
+
+                var ex = Assert.Throws<InvalidOperationException>(() => StartDummyApplication(server));
+                Assert.Equal(CoreStrings.NoCertSpecifiedNoDevelopmentCertificateFound, ex.Message);
+            }
+        }
+
+        [Fact]
+        public void KestrelServerDoesNotThrowIfNoDefaultHttpsProviderButNoHttpUrls()
+        {
+            using (var server = CreateServer(CreateServerOptions()))
+            {
+                server.Features.Get<IServerAddressesFeature>().Addresses.Add("http://127.0.0.1:0");
+
+                StartDummyApplication(server);
+            }
+        }
+
+        [Fact]
+        public void KestrelServerDoesNotThrowIfNoDefaultHttpsProviderButManualListenOptions()
+        {
+            var serverOptions = CreateServerOptions();
+            serverOptions.Listen(new IPEndPoint(IPAddress.Loopback, 0));
+
+            using (var server = CreateServer(serverOptions))
+            {
+                server.Features.Get<IServerAddressesFeature>().Addresses.Add("https://127.0.0.1:0");
+
+                StartDummyApplication(server);
             }
         }
 
@@ -151,6 +198,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         public void LoggerCategoryNameIsKestrelServerNamespace()
         {
             var mockLoggerFactory = new Mock<ILoggerFactory>();
+            var mockLogger = new Mock<ILogger>();
+            mockLoggerFactory.Setup(m => m.CreateLogger(It.IsAny<string>())).Returns(mockLogger.Object);
             new KestrelServer(Options.Create<KestrelServerOptions>(null), Mock.Of<ITransportFactory>(), mockLoggerFactory.Object);
             mockLoggerFactory.Verify(factory => factory.CreateLogger("Microsoft.AspNetCore.Server.Kestrel"));
         }
@@ -158,8 +207,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [Fact]
         public void StartWithNoTransportFactoryThrows()
         {
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            var mockLogger = new Mock<ILogger>();
+            mockLoggerFactory.Setup(m => m.CreateLogger(It.IsAny<string>())).Returns(mockLogger.Object);
             var exception = Assert.Throws<ArgumentNullException>(() =>
-                new KestrelServer(Options.Create<KestrelServerOptions>(null), null, Mock.Of<ILoggerFactory>()));
+                new KestrelServer(Options.Create<KestrelServerOptions>(null), null, mockLoggerFactory.Object));
 
             Assert.Equal("transportFactory", exception.ParamName);
         }
@@ -191,10 +243,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 
             var mockTransportFactory = new Mock<ITransportFactory>();
             mockTransportFactory
-                .Setup(transportFactory => transportFactory.Create(It.IsAny<IEndPointInformation>(), It.IsAny<IConnectionHandler>()))
+                .Setup(transportFactory => transportFactory.Create(It.IsAny<IEndPointInformation>(), It.IsAny<IConnectionDispatcher>()))
                 .Returns(mockTransport.Object);
 
-            var server = new KestrelServer(Options.Create(options), mockTransportFactory.Object, Mock.Of<LoggerFactory>());
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            var mockLogger = new Mock<ILogger>();
+            mockLoggerFactory.Setup(m => m.CreateLogger(It.IsAny<string>())).Returns(mockLogger.Object);
+            var server = new KestrelServer(Options.Create(options), mockTransportFactory.Object, mockLoggerFactory.Object);
             await server.StartAsync(new DummyApplication(), CancellationToken.None);
 
             var stopTask1 = server.StopAsync(default(CancellationToken));
@@ -208,7 +263,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
             unbind.Release();
             stop.Release();
 
-            await Task.WhenAll(new[] { stopTask1, stopTask2, stopTask3 }).TimeoutAfter(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(new[] { stopTask1, stopTask2, stopTask3 }).TimeoutAfter(TestConstants.DefaultTimeout);
 
             mockTransport.Verify(transport => transport.UnbindAsync(), Times.Once);
             mockTransport.Verify(transport => transport.StopAsync(), Times.Once);
@@ -245,10 +300,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 
             var mockTransportFactory = new Mock<ITransportFactory>();
             mockTransportFactory
-                .Setup(transportFactory => transportFactory.Create(It.IsAny<IEndPointInformation>(), It.IsAny<IConnectionHandler>()))
+                .Setup(transportFactory => transportFactory.Create(It.IsAny<IEndPointInformation>(), It.IsAny<IConnectionDispatcher>()))
                 .Returns(mockTransport.Object);
 
-            var server = new KestrelServer(Options.Create(options), mockTransportFactory.Object, Mock.Of<LoggerFactory>());
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            var mockLogger = new Mock<ILogger>();
+            mockLoggerFactory.Setup(m => m.CreateLogger(It.IsAny<string>())).Returns(mockLogger.Object);
+            var server = new KestrelServer(Options.Create(options), mockTransportFactory.Object, mockLoggerFactory.Object);
             await server.StartAsync(new DummyApplication(), CancellationToken.None);
 
             var stopTask1 = server.StopAsync(default(CancellationToken));
@@ -261,10 +319,67 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 
             unbind.Release();
 
-            var timeout = TimeSpan.FromSeconds(10);
+            var timeout = TestConstants.DefaultTimeout;
             Assert.Same(unbindException, await Assert.ThrowsAsync<InvalidOperationException>(() => stopTask1.TimeoutAfter(timeout)));
             Assert.Same(unbindException, await Assert.ThrowsAsync<InvalidOperationException>(() => stopTask2.TimeoutAfter(timeout)));
             Assert.Same(unbindException, await Assert.ThrowsAsync<InvalidOperationException>(() => stopTask3.TimeoutAfter(timeout)));
+
+            mockTransport.Verify(transport => transport.UnbindAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task StopAsyncDispatchesSubsequentStopAsyncContinuations()
+        {
+            var options = new KestrelServerOptions
+            {
+                ListenOptions =
+                {
+                    new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0))
+                }
+            };
+
+            var unbindTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var mockTransport = new Mock<ITransport>();
+            mockTransport
+                .Setup(transport => transport.BindAsync())
+                .Returns(Task.CompletedTask);
+            mockTransport
+                .Setup(transport => transport.UnbindAsync())
+                .Returns(unbindTcs.Task);
+            mockTransport
+                .Setup(transport => transport.StopAsync())
+                .Returns(Task.CompletedTask);
+
+            var mockTransportFactory = new Mock<ITransportFactory>();
+            mockTransportFactory
+                .Setup(transportFactory => transportFactory.Create(It.IsAny<IEndPointInformation>(), It.IsAny<IConnectionDispatcher>()))
+                .Returns(mockTransport.Object);
+
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            var mockLogger = new Mock<ILogger>();
+            mockLoggerFactory.Setup(m => m.CreateLogger(It.IsAny<string>())).Returns(mockLogger.Object);
+            var server = new KestrelServer(Options.Create(options), mockTransportFactory.Object, mockLoggerFactory.Object);
+            await server.StartAsync(new DummyApplication(), default);
+
+            var stopTask1 = server.StopAsync(default);
+            var stopTask2 = server.StopAsync(default);
+
+            Assert.False(stopTask1.IsCompleted);
+            Assert.False(stopTask2.IsCompleted);
+
+            var continuationTask = Task.Run(async () =>
+            {
+                await stopTask2;
+                stopTask1.Wait();
+            });
+
+            unbindTcs.SetResult(null);
+
+            // If stopTask2 is completed inline by the first call to StopAsync, stopTask1 will never complete.
+            await stopTask1.TimeoutAfter(TestConstants.DefaultTimeout);
+            await stopTask2.TimeoutAfter(TestConstants.DefaultTimeout);
+            await continuationTask.TimeoutAfter(TestConstants.DefaultTimeout);
 
             mockTransport.Verify(transport => transport.UnbindAsync(), Times.Once);
         }
@@ -274,6 +389,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
             return new KestrelServer(Options.Create(options), new MockTransportFactory(), new LoggerFactory(new[] { new KestrelTestLoggerProvider(testLogger) }));
         }
 
+        private static KestrelServer CreateServer(KestrelServerOptions options, bool throwOnCriticalErrors = true)
+        {
+            return new KestrelServer(Options.Create(options), new MockTransportFactory(), new LoggerFactory(new[] { new KestrelTestLoggerProvider(throwOnCriticalErrors) }));
+        }
+
         private static void StartDummyApplication(IServer server)
         {
             server.StartAsync(new DummyApplication(context => Task.CompletedTask), CancellationToken.None).GetAwaiter().GetResult();
@@ -281,7 +401,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 
         private class MockTransportFactory : ITransportFactory
         {
-            public ITransport Create(IEndPointInformation endPointInformation, IConnectionHandler handler)
+            public ITransport Create(IEndPointInformation endPointInformation, IConnectionDispatcher handler)
             {
                 return Mock.Of<ITransport>();
             }

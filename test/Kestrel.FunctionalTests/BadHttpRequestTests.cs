@@ -1,7 +1,6 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -10,12 +9,13 @@ using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
 using Moq;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 {
-    public class BadHttpRequestTests
+    public class BadHttpRequestTests : LoggedTest
     {
         [Theory]
         [MemberData(nameof(InvalidRequestLineData))]
@@ -133,25 +133,30 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         }
 
         [Fact]
+        public Task BadRequestFor10BadHostHeaderFormat()
+        {
+            return TestBadRequest(
+                $"GET / HTTP/1.0\r\nHost: a=b\r\n\r\n",
+                "400 Bad Request",
+                CoreStrings.FormatBadRequest_InvalidHostHeader_Detail("a=b"));
+        }
+
+        [Fact]
+        public Task BadRequestFor11BadHostHeaderFormat()
+        {
+            return TestBadRequest(
+                $"GET / HTTP/1.1\r\nHost: a=b\r\n\r\n",
+                "400 Bad Request",
+                CoreStrings.FormatBadRequest_InvalidHostHeader_Detail("a=b"));
+        }
+
+        [Fact]
         public async Task BadRequestLogsAreNotHigherThanInformation()
         {
-            var maxLogLevel = LogLevel.Trace;
-
-            var mockLogger = new Mock<ILogger>();
-            mockLogger
-                .Setup(logger => logger.IsEnabled(It.IsAny<LogLevel>()))
-                .Returns(true);
-            mockLogger
-                .Setup(logger => logger.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(), It.IsAny<object>(), It.IsAny<Exception>(), It.IsAny<Func<object, Exception, string>>()))
-                .Callback<LogLevel, EventId, object, Exception, Func<object, Exception, string>>((logLevel, eventId, state, ex, formatter) =>
-                {
-                    maxLogLevel = logLevel > maxLogLevel ? logLevel : maxLogLevel;
-                });
-
             using (var server = new TestServer(async context =>
             {
                 await context.Request.Body.ReadAsync(new byte[1], 0, 1);
-            }, new TestServiceContext { Log = new KestrelTrace(mockLogger.Object) }))
+            }, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = new TestConnection(server.Port))
                 {
@@ -163,10 +168,24 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 }
             }
 
-            const int badRequestEventId = 17;
-            mockLogger.Verify(logger => logger.Log(LogLevel.Information, badRequestEventId, It.IsAny<object>(), It.IsAny<BadHttpRequestException>(), It.IsAny<Func<object, Exception, string>>()));
+            Assert.All(TestSink.Writes, w => Assert.InRange(w.LogLevel, LogLevel.Trace, LogLevel.Information));
+            Assert.Contains(TestSink.Writes, w => w.EventId.Id == 17 && w.LogLevel == LogLevel.Information);
+        }
 
-            Assert.Equal(LogLevel.Information, maxLogLevel);
+        [Fact]
+        public async Task TestRequestSplitting()
+        {
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory, Mock.Of<IKestrelTrace>())))
+            {
+                using (var client = server.CreateConnection())
+                {
+                    await client.SendAll(
+                        "GET /\x0D\0x0ALocation:http://www.contoso.com/ HTTP/1.1",
+                        "Host:\r\n\r\n");
+
+                    await client.ReceiveStartsWith("HTTP/1.1 400");
+                }
+            }
         }
 
         private async Task TestBadRequest(string request, string expectedResponseStatusCode, string expectedExceptionMessage, string expectedAllowHeader = null)
@@ -180,7 +199,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 .Setup(trace => trace.ConnectionBadRequest(It.IsAny<string>(), It.IsAny<BadHttpRequestException>()))
                 .Callback<string, BadHttpRequestException>((connectionId, exception) => loggedException = exception);
 
-            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext { Log = mockKestrelTrace.Object }))
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory, mockKestrelTrace.Object)))
             {
                 using (var connection = server.CreateConnection())
                 {

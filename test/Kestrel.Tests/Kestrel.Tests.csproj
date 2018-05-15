@@ -1,26 +1,24 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <Import Project="..\..\build\common.props" />
-
   <PropertyGroup>
     <AssemblyName>Microsoft.AspNetCore.Server.Kestrel.Tests</AssemblyName>
     <RootNamespace>Microsoft.AspNetCore.Server.Kestrel.Tests</RootNamespace>
-    <TargetFrameworks>netcoreapp2.0;net461</TargetFrameworks>
-    <TargetFrameworks Condition=" '$(OS)' != 'Windows_NT' ">netcoreapp2.0</TargetFrameworks>
+    <TargetFrameworks>$(StandardTestTfms)</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="..\shared\**\*.cs" />
+    <Content Include="..\shared\TestCertificates\*.pfx" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net461'">
+    <ProjectReference Include="..\..\tools\CodeGenerator\CodeGenerator.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Kestrel\Kestrel.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
-    <PackageReference Include="xunit" Version="$(XunitVersion)" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="$(XunitVersion)" />
+    <ProjectReference Include="..\..\src\Kestrel.Transport.Libuv\Kestrel.Transport.Libuv.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.Testing" Version="$(MicrosoftAspNetCoreTestingPackageVersion)" />
   </ItemGroup>
 
 </Project>

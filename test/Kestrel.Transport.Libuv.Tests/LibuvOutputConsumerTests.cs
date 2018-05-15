@@ -2,13 +2,17 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests.TestHelpers;
@@ -20,7 +24,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 {
     public class LibuvOutputConsumerTests : IDisposable
     {
-        private readonly PipeFactory _pipeFactory;
+        private readonly MemoryPool<byte> _memoryPool;
         private readonly MockLibuv _mockLibuv;
         private readonly LibuvThread _libuvThread;
 
@@ -36,18 +40,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
         public LibuvOutputConsumerTests()
         {
-            _pipeFactory = new PipeFactory();
+            _memoryPool = KestrelMemoryPool.Create();
             _mockLibuv = new MockLibuv();
 
-            var libuvTransport = new LibuvTransport(_mockLibuv, new TestLibuvTransportContext(), new ListenOptions(0));
+            var libuvTransport = new LibuvTransport(_mockLibuv, new TestLibuvTransportContext(), new ListenOptions((ulong)0));
             _libuvThread = new LibuvThread(libuvTransport, maxLoops: 1);
             _libuvThread.StartAsync().Wait();
         }
 
         public void Dispose()
         {
-            _libuvThread.StopAsync(TimeSpan.FromSeconds(1)).Wait();
-            _pipeFactory.Dispose();
+            _libuvThread.StopAsync(TimeSpan.FromSeconds(5)).Wait();
+            _memoryPool.Dispose();
         }
 
         [Theory]
@@ -58,14 +62,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             // SocketOutput, the write callback would never be invoked for writes larger than
             // maxResponseBufferSize even after the write actually completed.
 
-            // ConnectionHandler will set MaximumSizeHigh/Low to zero when MaxResponseBufferSize is null.
+            // ConnectionHandler will set Pause/ResumeWriterThreshold to zero when MaxResponseBufferSize is null.
             // This is verified in PipeOptionsTests.OutputPipeOptionsConfiguredCorrectly.
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = maxResponseBufferSize ?? 0,
-                MaximumSizeLow = maxResponseBufferSize ?? 0,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: maxResponseBufferSize ?? 0,
+                resumeWriterThreshold: maxResponseBufferSize ?? 0,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -74,10 +81,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var buffer = new ArraySegment<byte>(new byte[bufferSize], 0, bufferSize);
 
                 // Act
-                var writeTask = outputProducer.WriteAsync(buffer);
+                var writeTask = outputProducer.WriteDataAsync(buffer);
 
                 // Assert
-                await writeTask.TimeoutAfter(TimeSpan.FromSeconds(5));
+                await writeTask.TimeoutAfter(TestConstants.DefaultTimeout);
             }
         }
 
@@ -93,14 +100,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 return 0;
             };
 
-            // ConnectionHandler will set MaximumSizeHigh/Low to zero when MaxResponseBufferSize is null.
+            // ConnectionHandler will set Pause/ResumeWriterThreshold to zero when MaxResponseBufferSize is null.
             // This is verified in PipeOptionsTests.OutputPipeOptionsConfiguredCorrectly.
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = 0,
-                MaximumSizeLow = 0,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: 0,
+                resumeWriterThreshold: 0,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -109,10 +119,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var buffer = new ArraySegment<byte>(new byte[bufferSize], 0, bufferSize);
 
                 // Act
-                var writeTask = outputProducer.WriteAsync(buffer);
+                var writeTask = outputProducer.WriteDataAsync(buffer);
 
                 // Assert
-                await writeTask.TimeoutAfter(TimeSpan.FromSeconds(5));
+                await writeTask.TimeoutAfter(TestConstants.DefaultTimeout);
 
                 // Cleanup
                 outputProducer.Dispose();
@@ -140,14 +150,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 return 0;
             };
 
-            // ConnectionHandler will set MaximumSizeHigh/Low to 1 when MaxResponseBufferSize is zero.
+            // ConnectionHandler will set Pause/ResumeWriterThreshold to 1 when MaxResponseBufferSize is zero.
             // This is verified in PipeOptionsTests.OutputPipeOptionsConfiguredCorrectly.
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = 1,
-                MaximumSizeLow = 1,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: 1,
+                resumeWriterThreshold: 1,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -155,7 +168,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var buffer = new ArraySegment<byte>(new byte[bufferSize], 0, bufferSize);
 
                 // Act
-                var writeTask = outputProducer.WriteAsync(buffer);
+                var writeTask = outputProducer.WriteDataAsync(buffer);
 
                 // Assert
                 Assert.False(writeTask.IsCompleted);
@@ -168,7 +181,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 await _libuvThread.PostAsync(cb => cb(0), triggerNextCompleted);
 
                 // Assert
-                await writeTask.TimeoutAfter(TimeSpan.FromSeconds(5));
+                await writeTask.TimeoutAfter(TestConstants.DefaultTimeout);
 
                 // Cleanup
                 outputProducer.Dispose();
@@ -198,11 +211,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             };
 
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = maxResponseBufferSize,
-                MaximumSizeLow = maxResponseBufferSize,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: maxResponseBufferSize,
+                resumeWriterThreshold: maxResponseBufferSize,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -210,14 +226,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var buffer = new ArraySegment<byte>(new byte[bufferSize], 0, bufferSize);
 
                 // Act
-                var writeTask1 = outputProducer.WriteAsync(buffer);
+                var writeTask1 = outputProducer.WriteDataAsync(buffer);
 
                 // Assert
                 // The first write should pre-complete since it is <= _maxBytesPreCompleted.
                 Assert.Equal(TaskStatus.RanToCompletion, writeTask1.Status);
 
                 // Act
-                var writeTask2 = outputProducer.WriteAsync(buffer);
+                var writeTask2 = outputProducer.WriteDataAsync(buffer);
                 await _mockLibuv.OnPostTask;
 
                 // Assert
@@ -229,7 +245,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 await _libuvThread.PostAsync(cb => cb(0), triggerNextCompleted);
 
                 // Finishing the first write should allow the second write to pre-complete.
-                await writeTask2.TimeoutAfter(TimeSpan.FromSeconds(5));
+                await writeTask2.TimeoutAfter(TestConstants.DefaultTimeout);
 
                 // Cleanup
                 outputProducer.Dispose();
@@ -261,11 +277,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 };
 
                 var pipeOptions = new PipeOptions
-                {
-                    ReaderScheduler = _libuvThread,
-                    MaximumSizeHigh = maxResponseBufferSize,
-                    MaximumSizeLow = maxResponseBufferSize,
-                };
+                (
+                    pool: _memoryPool,
+                    readerScheduler: _libuvThread,
+                    writerScheduler: PipeScheduler.Inline,
+                    pauseWriterThreshold: maxResponseBufferSize,
+                    resumeWriterThreshold: maxResponseBufferSize,
+                    useSynchronizationContext: false
+                );
 
                 using (var outputProducer = CreateOutputProducer(pipeOptions))
                 {
@@ -274,7 +293,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     var halfWriteBehindBuffer = new ArraySegment<byte>(data, 0, bufferSize);
 
                     // Act
-                    var writeTask1 = outputProducer.WriteAsync(halfWriteBehindBuffer);
+                    var writeTask1 = outputProducer.WriteDataAsync(halfWriteBehindBuffer);
 
                     // Assert
                     // The first write should pre-complete since it is <= _maxBytesPreCompleted.
@@ -286,14 +305,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     outputProducer.Write((writableBuffer, state) =>
                     {
                         writableBuffer.Write(state);
+                        return state.Count;
                     },
                     halfWriteBehindBuffer);
 
                     // Act
-                    var writeTask2 = outputProducer.WriteAsync(halfWriteBehindBuffer);
+                    var writeTask2 = outputProducer.WriteDataAsync(halfWriteBehindBuffer);
                     Assert.False(writeTask2.IsCompleted);
 
-                    var writeTask3 = outputProducer.WriteAsync(halfWriteBehindBuffer);
+                    var writeTask3 = outputProducer.WriteDataAsync(halfWriteBehindBuffer);
                     Assert.False(writeTask3.IsCompleted);
 
                     // Drain the write queue
@@ -302,7 +322,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                         await _libuvThread.PostAsync(cb => cb(0), triggerNextCompleted);
                     }
 
-                    var timeout = TimeSpan.FromSeconds(5);
+                    var timeout = TestConstants.DefaultTimeout;
 
                     await writeTask2.TimeoutAfter(timeout);
                     await writeTask3.TimeoutAfter(timeout);
@@ -330,11 +350,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var abortedSource = new CancellationTokenSource();
 
                 var pipeOptions = new PipeOptions
-                {
-                    ReaderScheduler = _libuvThread,
-                    MaximumSizeHigh = maxResponseBufferSize,
-                    MaximumSizeLow = maxResponseBufferSize,
-                };
+                (
+                    pool: _memoryPool,
+                    readerScheduler: _libuvThread,
+                    writerScheduler: PipeScheduler.Inline,
+                    pauseWriterThreshold: maxResponseBufferSize,
+                    resumeWriterThreshold: maxResponseBufferSize,
+                    useSynchronizationContext: false
+                );
 
                 using (var outputProducer = CreateOutputProducer(pipeOptions, abortedSource))
                 {
@@ -344,7 +367,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     var fullBuffer = new ArraySegment<byte>(data, 0, bufferSize);
 
                     // Act
-                    var task1Success = outputProducer.WriteAsync(fullBuffer, cancellationToken: abortedSource.Token);
+                    var task1Success = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: abortedSource.Token);
                     // task1 should complete successfully as < _maxBytesPreCompleted
 
                     // First task is completed and successful
@@ -353,8 +376,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     Assert.False(task1Success.IsFaulted);
 
                     // following tasks should wait.
-                    var task2Success = outputProducer.WriteAsync(fullBuffer);
-                    var task3Canceled = outputProducer.WriteAsync(fullBuffer, cancellationToken: abortedSource.Token);
+                    var task2Success = outputProducer.WriteDataAsync(fullBuffer);
+                    var task3Canceled = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: abortedSource.Token);
 
                     // Give time for tasks to percolate
                     await _mockLibuv.OnPostTask;
@@ -382,7 +405,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
                     // A final write guarantees that the error is observed by OutputProducer,
                     // but doesn't return a canceled/faulted task.
-                    var task4Success = outputProducer.WriteAsync(fullBuffer, cancellationToken: default(CancellationToken));
+                    var task4Success = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: default(CancellationToken));
                     Assert.True(task4Success.IsCompleted);
                     Assert.False(task4Success.IsCanceled);
                     Assert.False(task4Success.IsFaulted);
@@ -422,11 +445,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var abortedSource = new CancellationTokenSource();
 
                 var pipeOptions = new PipeOptions
-                {
-                    ReaderScheduler = _libuvThread,
-                    MaximumSizeHigh = maxResponseBufferSize,
-                    MaximumSizeLow = maxResponseBufferSize,
-                };
+                (
+                    pool: _memoryPool,
+                    readerScheduler: _libuvThread,
+                    writerScheduler: PipeScheduler.Inline,
+                    pauseWriterThreshold: maxResponseBufferSize,
+                    resumeWriterThreshold: maxResponseBufferSize,
+                    useSynchronizationContext: false
+                );
 
                 using (var outputProducer = CreateOutputProducer(pipeOptions))
                 {
@@ -436,7 +462,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     var fullBuffer = new ArraySegment<byte>(data, 0, bufferSize);
 
                     // Act
-                    var task1Success = outputProducer.WriteAsync(fullBuffer, cancellationToken: abortedSource.Token);
+                    var task1Success = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: abortedSource.Token);
                     // task1 should complete successfully as < _maxBytesPreCompleted
 
                     // First task is completed and successful
@@ -445,7 +471,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     Assert.False(task1Success.IsFaulted);
 
                     // following tasks should wait.
-                    var task3Canceled = outputProducer.WriteAsync(fullBuffer, cancellationToken: abortedSource.Token);
+                    var task3Canceled = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: abortedSource.Token);
 
                     // Give time for tasks to percolate
                     await _mockLibuv.OnPostTask;
@@ -465,7 +491,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
                     // A final write guarantees that the error is observed by OutputProducer,
                     // but doesn't return a canceled/faulted task.
-                    var task4Success = outputProducer.WriteAsync(fullBuffer);
+                    var task4Success = outputProducer.WriteDataAsync(fullBuffer);
                     Assert.True(task4Success.IsCompleted);
                     Assert.False(task4Success.IsCanceled);
                     Assert.False(task4Success.IsFaulted);
@@ -505,11 +531,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var abortedSource = new CancellationTokenSource();
 
                 var pipeOptions = new PipeOptions
-                {
-                    ReaderScheduler = _libuvThread,
-                    MaximumSizeHigh = maxResponseBufferSize,
-                    MaximumSizeLow = maxResponseBufferSize,
-                };
+                (
+                    pool: _memoryPool,
+                    readerScheduler: _libuvThread,
+                    writerScheduler: PipeScheduler.Inline,
+                    pauseWriterThreshold: maxResponseBufferSize,
+                    resumeWriterThreshold: maxResponseBufferSize,
+                    useSynchronizationContext: false
+                );
 
                 using (var outputProducer = CreateOutputProducer(pipeOptions))
                 {
@@ -519,7 +548,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     var fullBuffer = new ArraySegment<byte>(data, 0, bufferSize);
 
                     // Act
-                    var task1Waits = outputProducer.WriteAsync(fullBuffer);
+                    var task1Waits = outputProducer.WriteDataAsync(fullBuffer);
 
                     // First task is not completed
                     Assert.False(task1Waits.IsCompleted);
@@ -527,7 +556,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     Assert.False(task1Waits.IsFaulted);
 
                     // following tasks should wait.
-                    var task3Canceled = outputProducer.WriteAsync(fullBuffer, cancellationToken: abortedSource.Token);
+                    var task3Canceled = outputProducer.WriteDataAsync(fullBuffer, cancellationToken: abortedSource.Token);
 
                     // Give time for tasks to percolate
                     await _mockLibuv.OnPostTask;
@@ -552,7 +581,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
                     // A final write guarantees that the error is observed by OutputProducer,
                     // but doesn't return a canceled/faulted task.
-                    var task4Success = outputProducer.WriteAsync(fullBuffer);
+                    var task4Success = outputProducer.WriteDataAsync(fullBuffer);
                     Assert.True(task4Success.IsCompleted);
                     Assert.False(task4Success.IsCanceled);
                     Assert.False(task4Success.IsFaulted);
@@ -586,11 +615,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             };
 
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = maxResponseBufferSize,
-                MaximumSizeLow = maxResponseBufferSize,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: maxResponseBufferSize,
+                resumeWriterThreshold: maxResponseBufferSize,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -598,7 +630,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 var buffer = new ArraySegment<byte>(new byte[bufferSize], 0, bufferSize);
 
                 // Act (Pre-complete the maximum number of bytes in preparation for the rest of the test)
-                var writeTask1 = outputProducer.WriteAsync(buffer);
+                var writeTask1 = outputProducer.WriteDataAsync(buffer);
 
                 // Assert
                 // The first write should pre-complete since it is < _maxBytesPreCompleted.
@@ -607,8 +639,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 Assert.NotEmpty(completeQueue);
 
                 // Act
-                var writeTask2 = outputProducer.WriteAsync(buffer);
-                var writeTask3 = outputProducer.WriteAsync(buffer);
+                var writeTask2 = outputProducer.WriteDataAsync(buffer);
+                var writeTask3 = outputProducer.WriteDataAsync(buffer);
 
                 await _mockLibuv.OnPostTask;
 
@@ -618,7 +650,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                     await _libuvThread.PostAsync(cb => cb(0), triggerNextCompleted);
                 }
 
-                var timeout = TimeSpan.FromSeconds(5);
+                var timeout = TestConstants.DefaultTimeout;
 
                 // Assert
                 // Too many bytes are already pre-completed for the third but not the second write to pre-complete.
@@ -643,14 +675,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 return 0;
             };
 
-            // ConnectionHandler will set MaximumSizeHigh/Low to zero when MaxResponseBufferSize is null.
+            // ConnectionHandler will set Pause/ResumeWriterThreshold to zero when MaxResponseBufferSize is null.
             // This is verified in PipeOptionsTests.OutputPipeOptionsConfiguredCorrectly.
             var pipeOptions = new PipeOptions
-            {
-                ReaderScheduler = _libuvThread,
-                MaximumSizeHigh = maxResponseBufferSize ?? 0,
-                MaximumSizeLow = maxResponseBufferSize ?? 0,
-            };
+            (
+                pool: _memoryPool,
+                readerScheduler: _libuvThread,
+                writerScheduler: PipeScheduler.Inline,
+                pauseWriterThreshold: maxResponseBufferSize ?? 0,
+                resumeWriterThreshold: maxResponseBufferSize ?? 0,
+                useSynchronizationContext: false
+            );
 
             using (var outputProducer = CreateOutputProducer(pipeOptions))
             {
@@ -660,8 +695,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
                 // Two calls to WriteAsync trigger uv_write once if both calls
                 // are made before write is scheduled
-                var ignore = outputProducer.WriteAsync(buffer);
-                ignore = outputProducer.WriteAsync(buffer);
+                var ignore = outputProducer.WriteDataAsync(buffer);
+                ignore = outputProducer.WriteDataAsync(buffer);
 
                 _mockLibuv.KestrelThreadBlocker.Set();
 
@@ -681,40 +716,46 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             }
         }
 
-        private OutputProducer CreateOutputProducer(PipeOptions pipeOptions, CancellationTokenSource cts = null)
+        private Http1OutputProducer CreateOutputProducer(PipeOptions pipeOptions, CancellationTokenSource cts = null)
         {
-            var pipe = _pipeFactory.Create(pipeOptions);
+            var pair = DuplexPipe.CreateConnectionPair(pipeOptions, pipeOptions);
 
             var logger = new TestApplicationErrorLogger();
             var serviceContext = new TestServiceContext
             {
                 Log = new TestKestrelTrace(logger),
-                ThreadPool = new InlineLoggingThreadPool(new TestKestrelTrace(logger))
+                Scheduler = PipeScheduler.Inline
             };
             var transportContext = new TestLibuvTransportContext { Log = new LibuvTrace(logger) };
 
             var socket = new MockSocket(_mockLibuv, _libuvThread.Loop.ThreadId, transportContext.Log);
-            var consumer = new LibuvOutputConsumer(pipe.Reader, _libuvThread, socket, "0", transportContext.Log);
+            var consumer = new LibuvOutputConsumer(pair.Application.Input, _libuvThread, socket, "0", transportContext.Log);
 
-            var frame = new Frame<object>(null, new FrameContext
+            var connectionFeatures = new FeatureCollection();
+            connectionFeatures.Set(Mock.Of<IConnectionLifetimeFeature>());
+            connectionFeatures.Set(Mock.Of<IBytesWrittenFeature>());
+
+            var http1Connection = new Http1Connection(new Http1ConnectionContext
             {
                 ServiceContext = serviceContext,
-                PipeFactory = _pipeFactory,
+                ConnectionFeatures = connectionFeatures,
+                MemoryPool = _memoryPool,
                 TimeoutControl = Mock.Of<ITimeoutControl>(),
-                Output = pipe
+                Application = pair.Application,
+                Transport = pair.Transport
             });
 
             if (cts != null)
             {
-                frame.RequestAborted.Register(cts.Cancel);
+                http1Connection.RequestAborted.Register(cts.Cancel);
             }
 
-            var ignore = WriteOutputAsync(consumer, pipe.Reader, frame);
+            var ignore = WriteOutputAsync(consumer, pair.Application.Input, http1Connection);
 
-            return frame.Output;
+            return (Http1OutputProducer)http1Connection.Output;
         }
 
-        private async Task WriteOutputAsync(LibuvOutputConsumer consumer, IPipeReader outputReader, Frame frame)
+        private async Task WriteOutputAsync(LibuvOutputConsumer consumer, PipeReader outputReader, Http1Connection http1Connection)
         {
             // This WriteOutputAsync() calling code is equivalent to that in LibuvConnection.
             try
@@ -723,12 +764,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 // Without ConfigureAwait(false), xunit will dispatch.
                 await consumer.WriteOutputAsync().ConfigureAwait(false);
 
-                frame.Abort(error: null);
+                http1Connection.Abort(error: null);
                 outputReader.Complete();
             }
             catch (UvException ex)
             {
-                frame.Abort(ex);
+                http1Connection.Abort(ex);
                 outputReader.Complete(ex);
             }
         }

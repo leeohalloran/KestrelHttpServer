@@ -1,32 +1,31 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <Import Project="..\..\build\common.props" />
-
   <PropertyGroup>
     <AssemblyName>Microsoft.AspNetCore.Server.Kestrel.Core</AssemblyName>
     <RootNamespace>Microsoft.AspNetCore.Server.Kestrel.Core</RootNamespace>
     <Description>Core components of ASP.NET Core Kestrel cross-platform web server.</Description>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;netcoreapp2.1</TargetFrameworks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageTags>aspnetcore;kestrel</PackageTags>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>CS1591;$(NoWarn)</NoWarn>
-    <EnableApiCheck>false</EnableApiCheck>
-    <!-- TODO: remove when https://github.com/dotnet/sdk/pull/1270 is fixed -->
-    <GenerateResourceMSBuildRuntime>CurrentRuntime</GenerateResourceMSBuildRuntime>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Hosting.Abstractions" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="Microsoft.Net.Http.Headers" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="$(CoreFxVersion)" />
-
-    <!-- Override System.Memory and System.Runtime.CompilerServices.Unsafe to the ones we have on feed -->
-    <PackageReference Include="System.Memory" Version="$(CoreFxVersion)" />
-    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="$(CoreFxVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Certificates.Generation.Sources" PrivateAssets="All" Version="$(MicrosoftAspNetCoreCertificatesGenerationSourcesPackageVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Hosting.Abstractions" Version="$(MicrosoftAspNetCoreHostingAbstractionsPackageVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="$(MicrosoftAspNetCoreWebUtilitiesPackageVersion)" />
+    <PackageReference Include="Microsoft.Net.Http.Headers" Version="$(MicrosoftNetHttpHeadersPackageVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="$(MicrosoftExtensionsConfigurationBinderPackageVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsLoggingAbstractionsPackageVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="$(MicrosoftExtensionsOptionsPackageVersion)" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="$(SystemThreadingTasksExtensionsPackageVersion)" />
+    <PackageReference Include="System.Memory" Version="$(SystemMemoryPackageVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Buffers.Sources" Version="$(MicrosoftExtensionsBuffersSourcesPackageVersion)" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.Extensions.Buffers.MemoryPool.Sources" Version="$(MicrosoftExtensionsBuffersMemoryPoolSourcesPackageVersion)" PrivateAssets="All" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="$(SystemRuntimeCompilerServicesUnsafePackageVersion)" />
+    <PackageReference Include="System.Security.Cryptography.Cng" Version="$(SystemSecurityCryptographyCngPackageVersion)" />
+    <PackageReference Include="System.Numerics.Vectors" Version="$(SystemNumericsVectorsPackageVersion)" />
   </ItemGroup>
 
   <ItemGroup>

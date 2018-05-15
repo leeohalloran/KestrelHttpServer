@@ -2,14 +2,13 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.IO.Pipelines;
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking;
-using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests.TestHelpers;
 using Microsoft.AspNetCore.Testing;
 using Xunit;
 
@@ -68,7 +67,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
 
                 await writeRequest.WriteAsync(
                     serverConnectionPipe,
-                    ReadableBuffer.Create(new byte[] { 1, 2, 3, 4 }));
+                    new ReadOnlySequence<byte>(new byte[] { 1, 2, 3, 4 }));
 
                 writeRequest.Dispose();
                 serverConnectionPipe.Dispose();

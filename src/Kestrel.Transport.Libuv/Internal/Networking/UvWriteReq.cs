@@ -5,7 +5,6 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.IO.Pipelines;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking
@@ -25,7 +24,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
 
         private LibuvAwaitable<UvWriteReq> _awaitable = new LibuvAwaitable<UvWriteReq>();
         private List<GCHandle> _pins = new List<GCHandle>(BUFFER_COUNT + 1);
-        private List<BufferHandle> _handles = new List<BufferHandle>(BUFFER_COUNT + 1);
+        private List<MemoryHandle> _handles = new List<MemoryHandle>(BUFFER_COUNT + 1);
 
         public UvWriteReq(ILibuvTrace logger) : base(logger)
         {
@@ -49,7 +48,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
             _bufs = handle + requestSize;
         }
 
-        public LibuvAwaitable<UvWriteReq> WriteAsync(UvStreamHandle handle, ReadableBuffer buffer)
+        public LibuvAwaitable<UvWriteReq> WriteAsync(UvStreamHandle handle, ReadOnlySequence<byte> buffer)
         {
             Write(handle, buffer, LibuvAwaitable<UvWriteReq>.Callback, _awaitable);
             return _awaitable;
@@ -63,14 +62,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
 
         private unsafe void Write(
             UvStreamHandle handle,
-            ReadableBuffer buffer,
+            ReadOnlySequence<byte> buffer,
             Action<UvWriteReq, int, UvException, object> callback,
             object state)
         {
             try
             {
                 var nBuffers = 0;
-                if (buffer.IsSingleSpan)
+                if (buffer.IsSingleSegment)
                 {
                     nBuffers = 1;
                 }
@@ -95,12 +94,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
                 if (nBuffers == 1)
                 {
                     var memory = buffer.First;
-                    var memoryHandle = memory.Retain(true);
+                    var memoryHandle = memory.Pin();
                     _handles.Add(memoryHandle);
 
                     // Fast path for single buffer
                     pBuffers[0] = Libuv.buf_init(
-                            (IntPtr)memoryHandle.PinnedPointer,
+                            (IntPtr)memoryHandle.Pointer,
                             memory.Length);
                 }
                 else
@@ -109,12 +108,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
                     foreach (var memory in buffer)
                     {
                         // This won't actually pin the buffer since we're already using pinned memory
-                        var memoryHandle = memory.Retain(true);
+                        var memoryHandle = memory.Pin();
                         _handles.Add(memoryHandle);
 
                         // create and pin each segment being written
                         pBuffers[index] = Libuv.buf_init(
-                            (IntPtr)memoryHandle.PinnedPointer,
+                            (IntPtr)memoryHandle.Pointer,
                             memory.Length);
                         index++;
                     }
@@ -206,7 +205,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networkin
         }
 
         // Safe handle has instance method called Unpin
-        // so using UnpinGcHandles to avoid conflict 
+        // so using UnpinGcHandles to avoid conflict
         private void UnpinGcHandles()
         {
             var pinList = _pins;

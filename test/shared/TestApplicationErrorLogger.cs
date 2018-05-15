@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.Extensions.Logging;
 
@@ -13,6 +15,8 @@ namespace Microsoft.AspNetCore.Testing
     {
         // Application errors are logged using 13 as the eventId.
         private const int ApplicationErrorEventId = 13;
+
+        public List<Type> IgnoredExceptions { get; } = new List<Type>();
 
         public bool ThrowOnCriticalErrors { get; set; } = true;
 
@@ -40,16 +44,26 @@ namespace Microsoft.AspNetCore.Testing
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
         {
+            var exceptionIsIgnored = IgnoredExceptions.Contains(exception?.GetType());
 #if true
-            if (logLevel == LogLevel.Critical && ThrowOnCriticalErrors)
+            if (logLevel == LogLevel.Critical && ThrowOnCriticalErrors && !exceptionIsIgnored)
 #endif
             {
-                Console.WriteLine($"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception?.Message}");
+                var log = $"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception}";
 
-                if (logLevel == LogLevel.Critical && ThrowOnCriticalErrors)
+                Console.WriteLine(log);
+
+                if (logLevel == LogLevel.Critical && ThrowOnCriticalErrors && !exceptionIsIgnored)
                 {
-                    throw new Exception("Unexpected critical error.", exception);
+                    throw new Exception($"Unexpected critical error. {log}", exception);
                 }
+            }
+
+            // Fail tests where not all the connections close during server shutdown.
+            if (eventId.Id == 21 && eventId.Name == nameof(KestrelTrace.NotAllConnectionsAborted))
+            {
+                var log = $"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception?.Message}";
+                throw new Exception($"Shutdown failure. {log}");
             }
 
             Messages.Enqueue(new LogMessage

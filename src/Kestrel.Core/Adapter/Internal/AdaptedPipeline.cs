@@ -3,37 +3,38 @@
 
 using System;
 using System.IO;
+using System.IO.Pipelines;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
-using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
-using System.IO.Pipelines;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
 {
-    public class AdaptedPipeline
+    public class AdaptedPipeline : IDuplexPipe
     {
-        private const int MinAllocBufferSize = 2048;
+        private static readonly int MinAllocBufferSize = KestrelMemoryPool.MinimumSegmentSize / 2;
 
-        private readonly IKestrelTrace _trace;
-        private readonly IPipe _transportOutputPipe;
-        private readonly IPipeReader _transportInputPipeReader;
+        private readonly IDuplexPipe _transport;
+        private readonly IDuplexPipe _application;
 
-        public AdaptedPipeline(IPipeReader transportInputPipeReader,
-                               IPipe transportOutputPipe,
-                               IPipe inputPipe,
-                               IPipe outputPipe,
-                               IKestrelTrace trace)
+        public AdaptedPipeline(IDuplexPipe transport,
+                               IDuplexPipe application,
+                               Pipe inputPipe,
+                               Pipe outputPipe)
         {
-            _transportInputPipeReader = transportInputPipeReader;
-            _transportOutputPipe = transportOutputPipe;
+            _transport = transport;
+            _application = application;
             Input = inputPipe;
             Output = outputPipe;
-            _trace = trace;
         }
 
-        public IPipe Input { get; }
+        public Pipe Input { get; }
 
-        public IPipe Output { get; }
+        public Pipe Output { get; }
+
+        PipeReader IDuplexPipe.Input => Input.Reader;
+
+        PipeWriter IDuplexPipe.Output => Output.Writer;
 
         public async Task RunAsync(Stream stream)
         {
@@ -62,10 +63,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
 
                     try
                     {
-                        if (result.IsCancelled)
+                        if (result.IsCanceled)
                         {
                             // Forward the cancellation to the transport pipe
-                            _transportOutputPipe.Reader.CancelPendingRead();
+                            _application.Input.CancelPendingRead();
                             break;
                         }
 
@@ -77,23 +78,31 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
                             }
                             await stream.FlushAsync();
                         }
-                        else if (buffer.IsSingleSpan)
+                        else if (buffer.IsSingleSegment)
                         {
+#if NETCOREAPP2_1
+                            await stream.WriteAsync(buffer.First);
+#else
                             var array = buffer.First.GetArray();
                             await stream.WriteAsync(array.Array, array.Offset, array.Count);
+#endif
                         }
                         else
                         {
                             foreach (var memory in buffer)
                             {
+#if NETCOREAPP2_1
+                                await stream.WriteAsync(memory);
+#else
                                 var array = memory.GetArray();
                                 await stream.WriteAsync(array.Array, array.Offset, array.Count);
+#endif
                             }
                         }
                     }
                     finally
                     {
-                        Output.Reader.Advance(buffer.End);
+                        Output.Reader.AdvanceTo(buffer.End);
                     }
                 }
             }
@@ -104,7 +113,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
             finally
             {
                 Output.Reader.Complete();
-                _transportOutputPipe.Writer.Complete(error);
+                _transport.Output.Complete();
             }
         }
 
@@ -123,32 +132,27 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
                 while (true)
                 {
 
-                    var outputBuffer = Input.Writer.Alloc(MinAllocBufferSize);
+                    var outputBuffer = Input.Writer.GetMemory(MinAllocBufferSize);
+#if NETCOREAPP2_1
+                    var bytesRead = await stream.ReadAsync(outputBuffer);
+#else
+                    var array = outputBuffer.GetArray();
+                    var bytesRead = await stream.ReadAsync(array.Array, array.Offset, array.Count);
+#endif
+                    Input.Writer.Advance(bytesRead);
 
-                    var array = outputBuffer.Buffer.GetArray();
-                    try
+                    if (bytesRead == 0)
                     {
-                        var bytesRead = await stream.ReadAsync(array.Array, array.Offset, array.Count);
-                        outputBuffer.Advance(bytesRead);
-
-                        if (bytesRead == 0)
-                        {
-                            // FIN
-                            break;
-                        }
-                    }
-                    finally
-                    {
-                        outputBuffer.Commit();
+                        // FIN
+                        break;
                     }
 
-                    var result = await outputBuffer.FlushAsync();
+                    var result = await Input.Writer.FlushAsync();
 
                     if (result.IsCompleted)
                     {
                         break;
                     }
-
                 }
             }
             catch (Exception ex)
@@ -161,8 +165,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal
                 Input.Writer.Complete(error);
                 // The application could have ended the input pipe so complete
                 // the transport pipe as well
-                _transportInputPipeReader.Complete();
+                _transport.Input.Complete();
             }
+        }
+
+        public void Dispose()
+        {
         }
     }
 }

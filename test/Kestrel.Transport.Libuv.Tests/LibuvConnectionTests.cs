@@ -19,12 +19,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
         [Fact]
         public async Task DoesNotEndConnectionOnZeroRead()
         {
-            var mockConnectionHandler = new MockConnectionHandler();
+            var mockConnectionDispatcher = new MockConnectionDispatcher();
             var mockLibuv = new MockLibuv();
-            var transportContext = new TestLibuvTransportContext() { ConnectionHandler = mockConnectionHandler };
+            var transportContext = new TestLibuvTransportContext() { ConnectionDispatcher = mockConnectionDispatcher };
             var transport = new LibuvTransport(mockLibuv, transportContext, null);
             var thread = new LibuvThread(transport);
-
+            Task connectionTask = null;
             try
             {
                 await thread.StartAsync();
@@ -35,33 +35,48 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                         Thread = thread
                     };
                     var socket = new MockSocket(mockLibuv, Thread.CurrentThread.ManagedThreadId, transportContext.Log);
-                    var connection = new LibuvConnection(listenerContext, socket);
-                    _ = connection.Start();
+                    var connection = new LibuvConnection(socket, listenerContext.TransportContext.Log, thread);
+                    listenerContext.TransportContext.ConnectionDispatcher.OnConnection(connection);
+                    connectionTask = connection.Start();
 
                     mockLibuv.AllocCallback(socket.InternalGetHandle(), 2048, out var ignored);
                     mockLibuv.ReadCallback(socket.InternalGetHandle(), 0, ref ignored);
                 }, (object)null);
 
-                var readAwaitable = mockConnectionHandler.Input.Reader.ReadAsync();
+                var readAwaitable = mockConnectionDispatcher.Input.Reader.ReadAsync();
                 Assert.False(readAwaitable.IsCompleted);
             }
             finally
             {
-                await thread.StopAsync(TimeSpan.FromSeconds(1));
+                mockConnectionDispatcher.Input.Reader.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
+                await connectionTask;
+
+                await thread.StopAsync(TimeSpan.FromSeconds(5));
             }
         }
 
         [Fact]
         public async Task ConnectionDoesNotResumeAfterSocketCloseIfBackpressureIsApplied()
         {
-            var mockConnectionHandler = new MockConnectionHandler();
-            mockConnectionHandler.InputOptions.MaximumSizeHigh = 3;
+            var mockConnectionDispatcher = new MockConnectionDispatcher();
             var mockLibuv = new MockLibuv();
-            var transportContext = new TestLibuvTransportContext() { ConnectionHandler = mockConnectionHandler };
+            var transportContext = new TestLibuvTransportContext() { ConnectionDispatcher = mockConnectionDispatcher };
             var transport = new LibuvTransport(mockLibuv, transportContext, null);
             var thread = new LibuvThread(transport);
+            mockConnectionDispatcher.InputOptions = pool =>
+                new PipeOptions(
+                    pool: pool,
+                    pauseWriterThreshold: 3,
+                    readerScheduler: PipeScheduler.Inline,
+                    writerScheduler: PipeScheduler.Inline,
+                    useSynchronizationContext: false);
+
             // We don't set the output writer scheduler here since we want to run the callback inline
-            mockConnectionHandler.OutputOptions.ReaderScheduler = thread;
+
+            mockConnectionDispatcher.OutputOptions = pool => new PipeOptions(pool: pool, readerScheduler: thread, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false);
+
+
             Task connectionTask = null;
             try
             {
@@ -75,7 +90,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                         Thread = thread
                     };
                     var socket = new MockSocket(mockLibuv, Thread.CurrentThread.ManagedThreadId, transportContext.Log);
-                    var connection = new LibuvConnection(listenerContext, socket);
+                    var connection = new LibuvConnection(socket, listenerContext.TransportContext.Log, thread);
+                    listenerContext.TransportContext.ConnectionDispatcher.OnConnection(connection);
                     connectionTask = connection.Start();
 
                     mockLibuv.AllocCallback(socket.InternalGetHandle(), 2048, out var ignored);
@@ -88,9 +104,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 Assert.Null(mockLibuv.ReadCallback);
 
                 // Now complete the output writer so that the connection closes
-                mockConnectionHandler.Output.Writer.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
 
-                await connectionTask.TimeoutAfter(TimeSpan.FromSeconds(10));
+                await connectionTask.TimeoutAfter(TestConstants.DefaultTimeout);
 
                 // Assert that we don't try to start reading
                 Assert.Null(mockLibuv.AllocCallback);
@@ -98,28 +114,38 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             }
             finally
             {
-                await thread.StopAsync(TimeSpan.FromSeconds(1));
+                mockConnectionDispatcher.Input.Reader.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
+
+                await thread.StopAsync(TimeSpan.FromSeconds(5));
             }
         }
 
         [Fact]
         public async Task ConnectionDoesNotResumeAfterReadCallbackScheduledAndSocketCloseIfBackpressureIsApplied()
         {
-            var mockConnectionHandler = new MockConnectionHandler();
-            mockConnectionHandler.InputOptions.MaximumSizeHigh = 3;
-            mockConnectionHandler.InputOptions.MaximumSizeLow = 3;
+            var mockConnectionDispatcher = new MockConnectionDispatcher();
             var mockLibuv = new MockLibuv();
-            var transportContext = new TestLibuvTransportContext() { ConnectionHandler = mockConnectionHandler };
+            var transportContext = new TestLibuvTransportContext() { ConnectionDispatcher = mockConnectionDispatcher };
             var transport = new LibuvTransport(mockLibuv, transportContext, null);
             var thread = new LibuvThread(transport);
-            var mockScheduler = new Mock<IScheduler>();
+            var mockScheduler = new Mock<PipeScheduler>();
             Action backPressure = null;
             mockScheduler.Setup(m => m.Schedule(It.IsAny<Action<object>>(), It.IsAny<object>())).Callback<Action<object>, object>((a, o) =>
             {
                 backPressure = () => a(o);
             });
-            mockConnectionHandler.InputOptions.WriterScheduler = mockScheduler.Object;
-            mockConnectionHandler.OutputOptions.ReaderScheduler = thread;
+            mockConnectionDispatcher.InputOptions = pool =>
+                new PipeOptions(
+                    pool: pool,
+                    pauseWriterThreshold: 3,
+                    resumeWriterThreshold: 3,
+                    writerScheduler: mockScheduler.Object,
+                    readerScheduler: PipeScheduler.Inline,
+                    useSynchronizationContext: false);
+
+            mockConnectionDispatcher.OutputOptions = pool => new PipeOptions(pool: pool, readerScheduler: thread, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false);
+
             Task connectionTask = null;
             try
             {
@@ -133,7 +159,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                         Thread = thread
                     };
                     var socket = new MockSocket(mockLibuv, Thread.CurrentThread.ManagedThreadId, transportContext.Log);
-                    var connection = new LibuvConnection(listenerContext, socket);
+                    var connection = new LibuvConnection(socket, listenerContext.TransportContext.Log, thread);
+                    listenerContext.TransportContext.ConnectionDispatcher.OnConnection(connection);
                     connectionTask = connection.Start();
 
                     mockLibuv.AllocCallback(socket.InternalGetHandle(), 2048, out var ignored);
@@ -146,13 +173,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 Assert.Null(mockLibuv.ReadCallback);
 
                 // Now release backpressure by reading the input
-                var result = await mockConnectionHandler.Input.Reader.ReadAsync();
+                var result = await mockConnectionDispatcher.Input.Reader.ReadAsync();
                 // Calling advance will call into our custom scheduler that captures the back pressure
                 // callback
-                mockConnectionHandler.Input.Reader.Advance(result.Buffer.End);
+                mockConnectionDispatcher.Input.Reader.AdvanceTo(result.Buffer.End);
 
                 // Cancel the current pending flush
-                mockConnectionHandler.Input.Writer.CancelPendingFlush();
+                mockConnectionDispatcher.Input.Writer.CancelPendingFlush();
 
                 // Now release the back pressure
                 await thread.PostAsync(a => a(), backPressure);
@@ -162,9 +189,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 Assert.Null(mockLibuv.ReadCallback);
 
                 // Now complete the output writer and wait for the connection to close
-                mockConnectionHandler.Output.Writer.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
 
-                await connectionTask.TimeoutAfter(TimeSpan.FromSeconds(10));
+                await connectionTask.TimeoutAfter(TestConstants.DefaultTimeout);
 
                 // Assert that we don't try to start reading
                 Assert.Null(mockLibuv.AllocCallback);
@@ -172,19 +199,23 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             }
             finally
             {
-                await thread.StopAsync(TimeSpan.FromSeconds(1));
+                mockConnectionDispatcher.Input.Reader.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
+
+                await thread.StopAsync(TimeSpan.FromSeconds(5));
             }
         }
 
         [Fact]
         public async Task DoesNotThrowIfOnReadCallbackCalledWithEOFButAllocCallbackNotCalled()
         {
-            var mockConnectionHandler = new MockConnectionHandler();
+            var mockConnectionDispatcher = new MockConnectionDispatcher();
             var mockLibuv = new MockLibuv();
-            var transportContext = new TestLibuvTransportContext() { ConnectionHandler = mockConnectionHandler };
+            var transportContext = new TestLibuvTransportContext() { ConnectionDispatcher = mockConnectionDispatcher };
             var transport = new LibuvTransport(mockLibuv, transportContext, null);
             var thread = new LibuvThread(transport);
 
+            Task connectionTask = null;
             try
             {
                 await thread.StartAsync();
@@ -195,19 +226,24 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                         Thread = thread
                     };
                     var socket = new MockSocket(mockLibuv, Thread.CurrentThread.ManagedThreadId, transportContext.Log);
-                    var connection = new LibuvConnection(listenerContext, socket);
-                    _ = connection.Start();
+                    var connection = new LibuvConnection(socket, listenerContext.TransportContext.Log, thread);
+                    listenerContext.TransportContext.ConnectionDispatcher.OnConnection(connection);
+                    connectionTask = connection.Start();
 
                     var ignored = new LibuvFunctions.uv_buf_t();
                     mockLibuv.ReadCallback(socket.InternalGetHandle(), TestConstants.EOF, ref ignored);
                 }, (object)null);
 
-                var readAwaitable = await mockConnectionHandler.Input.Reader.ReadAsync();
+                var readAwaitable = await mockConnectionDispatcher.Input.Reader.ReadAsync();
                 Assert.True(readAwaitable.IsCompleted);
             }
             finally
             {
-                await thread.StopAsync(TimeSpan.FromSeconds(1));
+                mockConnectionDispatcher.Input.Reader.Complete();
+                mockConnectionDispatcher.Output.Writer.Complete();
+                await connectionTask;
+
+                await thread.StopAsync(TimeSpan.FromSeconds(5));
             }
         }
     }

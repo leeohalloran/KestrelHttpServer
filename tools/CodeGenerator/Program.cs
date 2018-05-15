@@ -12,12 +12,12 @@ namespace CodeGenerator
         {
             if (args.Length < 1)
             {
-                Console.Error.WriteLine("Missing path to FrameHeaders.Generated.cs");
+                Console.Error.WriteLine("Missing path to HttpHeaders.Generated.cs");
                 return 1;
             }
             else if (args.Length < 2)
             {
-                Console.Error.WriteLine("Missing path to Frame.Generated.cs");
+                Console.Error.WriteLine("Missing path to HttpProtocol.Generated.cs");
                 return 1;
             }
             else if (args.Length < 3)
@@ -25,17 +25,27 @@ namespace CodeGenerator
                 Console.Error.WriteLine("Missing path to HttpUtilities.Generated.cs");
                 return 1;
             }
+            else if (args.Length < 4)
+            {
+                Console.Error.WriteLine("Missing path to TransportConnection.Generated.cs");
+                return 1;
+            }
 
-            Run(args[0], args[1], args[2]);
+            Run(args[0], args[1], args[2], args[3]);
 
             return 0;
         }
 
-        public static void Run(string knownHeadersPath, string frameFeaturesCollectionPath, string httpUtilitiesPath)
+        public static void Run(
+            string knownHeadersPath,
+            string httpProtocolFeatureCollectionPath,
+            string httpUtilitiesPath,
+            string transportConnectionFeatureCollectionPath)
         {
             var knownHeadersContent = KnownHeaders.GeneratedFile();
-            var frameFeatureCollectionContent = FrameFeatureCollection.GeneratedFile();
+            var httpProtocolFeatureCollectionContent = HttpProtocolFeatureCollection.GenerateFile();
             var httpUtilitiesContent = HttpUtilities.HttpUtilities.GeneratedFile();
+            var transportConnectionFeatureCollectionContent = TransportConnectionFeatureCollection.GenerateFile();
 
             var existingKnownHeaders = File.Exists(knownHeadersPath) ? File.ReadAllText(knownHeadersPath) : "";
             if (!string.Equals(knownHeadersContent, existingKnownHeaders))
@@ -43,16 +53,22 @@ namespace CodeGenerator
                 File.WriteAllText(knownHeadersPath, knownHeadersContent);
             }
 
-            var existingFrameFeatureCollection = File.Exists(frameFeaturesCollectionPath) ? File.ReadAllText(frameFeaturesCollectionPath) : "";
-            if (!string.Equals(frameFeatureCollectionContent, existingFrameFeatureCollection))
+            var existingHttpProtocolFeatureCollection = File.Exists(httpProtocolFeatureCollectionPath) ? File.ReadAllText(httpProtocolFeatureCollectionPath) : "";
+            if (!string.Equals(httpProtocolFeatureCollectionContent, existingHttpProtocolFeatureCollection))
             {
-                File.WriteAllText(frameFeaturesCollectionPath, frameFeatureCollectionContent);
+                File.WriteAllText(httpProtocolFeatureCollectionPath, httpProtocolFeatureCollectionContent);
             }
 
             var existingHttpUtilities = File.Exists(httpUtilitiesPath) ? File.ReadAllText(httpUtilitiesPath) : "";
             if (!string.Equals(httpUtilitiesContent, existingHttpUtilities))
             {
                 File.WriteAllText(httpUtilitiesPath, httpUtilitiesContent);
+            }
+
+            var existingTransportConnectionFeatureCollection = File.Exists(transportConnectionFeatureCollectionPath) ? File.ReadAllText(transportConnectionFeatureCollectionPath) : "";
+            if (!string.Equals(transportConnectionFeatureCollectionContent, existingTransportConnectionFeatureCollection))
+            {
+                File.WriteAllText(transportConnectionFeatureCollectionPath, transportConnectionFeatureCollectionContent);
             }
         }
     }

@@ -3,8 +3,10 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -13,38 +15,32 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Connections;
+using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Protocols;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
-using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.AspNetCore.Testing.xunit;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
 using Moq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 {
-    public class RequestTests
+    public class RequestTests : LoggedTest
     {
         private const int _connectionStartedEventId = 1;
         private const int _connectionResetEventId = 19;
-        private const int _semaphoreWaitTimeout = 2500;
-
-        private readonly ITestOutputHelper _output;
-
-        public RequestTests(ITestOutputHelper output)
-        {
-            _output = output;
-        }
+        private static readonly int _semaphoreWaitTimeout = Debugger.IsAttached ? 10000 : 2500;
 
         public static TheoryData<ListenOptions> ConnectionAdapterData => new TheoryData<ListenOptions>
         {
@@ -68,7 +64,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             Assert.True(contentLength % bufferLength == 0, $"{nameof(contentLength)} sent must be evenly divisible by {bufferLength}.");
             Assert.True(bufferLength % 256 == 0, $"{nameof(bufferLength)} must be evenly divisible by 256");
 
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
+                .ConfigureServices(AddTestLogging)
                 .UseKestrel(options =>
                 {
                     options.Limits.MaxRequestBodySize = contentLength;
@@ -144,7 +141,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             return TestRemoteIPAddress("127.0.0.1", "127.0.0.1", "127.0.0.1");
         }
 
-        [ConditionalFact]
+        [ConditionalFact(Skip="https://github.com/aspnet/KestrelHttpServer/issues/2406")]
         [IPv6SupportedCondition]
         public Task RemoteIPv6Address()
         {
@@ -154,9 +151,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [Fact]
         public async Task DoesNotHangOnConnectionCloseRequest()
         {
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
                 .UseKestrel()
                 .UseUrls("http://127.0.0.1:0")
+                .ConfigureServices(AddTestLogging)
                 .Configure(app =>
                 {
                     app.Run(async context =>
@@ -184,29 +182,30 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var requestBodyPersisted = false;
             var responseBodyPersisted = false;
 
-            var builder = new WebHostBuilder()
-               .UseKestrel()
-               .UseUrls("http://127.0.0.1:0")
-               .Configure(app =>
-               {
-                   app.Run(async context =>
-                   {
-                       if (context.Request.Body is MemoryStream)
-                       {
-                           requestBodyPersisted = true;
-                       }
+            var builder = TransportSelector.GetWebHostBuilder()
+                .UseKestrel()
+                .UseUrls("http://127.0.0.1:0")
+                .ConfigureServices(AddTestLogging)
+                .Configure(app =>
+                {
+                    app.Run(async context =>
+                    {
+                        if (context.Request.Body is MemoryStream)
+                        {
+                            requestBodyPersisted = true;
+                        }
 
-                       if (context.Response.Body is MemoryStream)
-                       {
-                           responseBodyPersisted = true;
-                       }
+                        if (context.Response.Body is MemoryStream)
+                        {
+                            responseBodyPersisted = true;
+                        }
 
-                       context.Request.Body = new MemoryStream();
-                       context.Response.Body = new MemoryStream();
+                        context.Request.Body = new MemoryStream();
+                        context.Response.Body = new MemoryStream();
 
-                       await context.Response.WriteAsync("hello, world");
-                   });
-               });
+                        await context.Response.WriteAsync("hello, world");
+                    });
+                });
 
             using (var host = builder.Build())
             {
@@ -227,25 +226,26 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         public void CanUpgradeRequestWithConnectionKeepAliveUpgradeHeader()
         {
             var dataRead = false;
-            var builder = new WebHostBuilder()
-               .UseKestrel()
-               .UseUrls("http://127.0.0.1:0")
-               .Configure(app =>
-               {
-                   app.Run(async context =>
-                   {
-                       var stream = await context.Features.Get<IHttpUpgradeFeature>().UpgradeAsync();
-                       var data = new byte[3];
-                       var bytesRead = 0;
+            var builder = TransportSelector.GetWebHostBuilder()
+                .UseKestrel()
+                .UseUrls("http://127.0.0.1:0")
+                .ConfigureServices(AddTestLogging)
+                .Configure(app =>
+                {
+                    app.Run(async context =>
+                    {
+                        var stream = await context.Features.Get<IHttpUpgradeFeature>().UpgradeAsync();
+                        var data = new byte[3];
+                        var bytesRead = 0;
 
-                       while (bytesRead < 3)
-                       {
-                           bytesRead += await stream.ReadAsync(data, bytesRead, data.Length - bytesRead);
-                       }
+                        while (bytesRead < 3)
+                        {
+                            bytesRead += await stream.ReadAsync(data, bytesRead, data.Length - bytesRead);
+                        }
 
-                       dataRead = Encoding.ASCII.GetString(data, 0, 3) == "abc";
-                   });
-               });
+                        dataRead = Encoding.ASCII.GetString(data, 0, 3) == "abc";
+                    });
+                });
 
             using (var host = builder.Build())
             {
@@ -279,6 +279,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 .Setup(logger => logger.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(), It.IsAny<object>(), It.IsAny<Exception>(), It.IsAny<Func<object, Exception, string>>()))
                 .Callback<LogLevel, EventId, object, Exception, Func<object, Exception, string>>((logLevel, eventId, state, exception, formatter) =>
                 {
+                    Logger.Log(logLevel, eventId, state, exception, formatter);
                     if (eventId.Id == _connectionStartedEventId)
                     {
                         connectionStarted.Release();
@@ -297,9 +298,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var mockLoggerFactory = new Mock<ILoggerFactory>();
             mockLoggerFactory
                 .Setup(factory => factory.CreateLogger(It.IsAny<string>()))
-                .Returns(Mock.Of<ILogger>());
+                .Returns(Logger);
             mockLoggerFactory
-                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv")))
+                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets")))
                 .Returns(mockLogger.Object);
 
             using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(mockLoggerFactory.Object)))
@@ -307,7 +310,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 using (var connection = server.CreateConnection())
                 {
                     // Wait until connection is established
-                    Assert.True(await connectionStarted.WaitAsync(TimeSpan.FromSeconds(10)));
+                    Assert.True(await connectionStarted.WaitAsync(TestConstants.DefaultTimeout));
 
                     // Force a reset
                     connection.Socket.LingerState = new LingerOption(true, 0);
@@ -317,7 +320,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 // This check MUST come before disposing the server, otherwise there's a race where the RST
                 // is still in flight when the connection is aborted, leading to the reset never being received
                 // and therefore not logged.
-                Assert.True(await connectionReset.WaitAsync(TimeSpan.FromSeconds(10)));
+                Assert.True(await connectionReset.WaitAsync(TestConstants.DefaultTimeout));
             }
 
             Assert.False(loggedHigherThanDebug);
@@ -337,6 +340,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 .Setup(logger => logger.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(), It.IsAny<object>(), It.IsAny<Exception>(), It.IsAny<Func<object, Exception, string>>()))
                 .Callback<LogLevel, EventId, object, Exception, Func<object, Exception, string>>((logLevel, eventId, state, exception, formatter) =>
                 {
+                    Logger.Log(logLevel, eventId, state, exception, formatter);
                     if (eventId.Id == _connectionResetEventId)
                     {
                         connectionReset.Release();
@@ -351,9 +355,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var mockLoggerFactory = new Mock<ILoggerFactory>();
             mockLoggerFactory
                 .Setup(factory => factory.CreateLogger(It.IsAny<string>()))
-                .Returns(Mock.Of<ILogger>());
+                .Returns(Logger);
             mockLoggerFactory
-                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv")))
+                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets")))
                 .Returns(mockLogger.Object);
 
             using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(mockLoggerFactory.Object)))
@@ -383,7 +389,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 // This check MUST come before disposing the server, otherwise there's a race where the RST
                 // is still in flight when the connection is aborted, leading to the reset never being received
                 // and therefore not logged.
-                Assert.True(await connectionReset.WaitAsync(TimeSpan.FromSeconds(10)));
+                Assert.True(await connectionReset.WaitAsync(TestConstants.DefaultTimeout));
             }
 
             Assert.False(loggedHigherThanDebug);
@@ -405,7 +411,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 .Setup(logger => logger.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(), It.IsAny<object>(), It.IsAny<Exception>(), It.IsAny<Func<object, Exception, string>>()))
                 .Callback<LogLevel, EventId, object, Exception, Func<object, Exception, string>>((logLevel, eventId, state, exception, formatter) =>
                 {
-                    _output.WriteLine(logLevel + ": " + formatter(state, exception));
+                    Logger.Log(logLevel, eventId, state, exception, formatter);
+                    var log = $"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception}";
+                    TestOutputHelper.WriteLine(log);
 
                     if (eventId.Id == _connectionResetEventId)
                     {
@@ -421,9 +429,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var mockLoggerFactory = new Mock<ILoggerFactory>();
             mockLoggerFactory
                 .Setup(factory => factory.CreateLogger(It.IsAny<string>()))
-                .Returns(Mock.Of<ILogger>());
+                .Returns(Logger);
             mockLoggerFactory
-                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv")))
+                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets")))
                 .Returns(mockLogger.Object);
 
             using (var server = new TestServer(async context =>
@@ -438,7 +448,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     await connection.SendEmptyGet();
 
                     // Wait until connection is established
-                    Assert.True(await requestStarted.WaitAsync(TimeSpan.FromSeconds(30)), "request should have started");
+                    Assert.True(await requestStarted.WaitAsync(TestConstants.DefaultTimeout), "request should have started");
 
                     // Force a reset
                     connection.Socket.LingerState = new LingerOption(true, 0);
@@ -448,7 +458,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 // This check MUST come before disposing the server, otherwise there's a race where the RST
                 // is still in flight when the connection is aborted, leading to the reset never being received
                 // and therefore not logged.
-                Assert.True(await connectionReset.WaitAsync(TimeSpan.FromSeconds(30)), "Connection reset event should have been logged");
+                Assert.True(await connectionReset.WaitAsync(TestConstants.DefaultTimeout), "Connection reset event should have been logged");
                 connectionClosing.Release();
             }
 
@@ -463,7 +473,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             var appDone = new SemaphoreSlim(0);
             var expectedExceptionThrown = false;
 
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
+                .ConfigureServices(AddTestLogging)
                 .UseKestrel()
                 .UseUrls("http://127.0.0.1:0")
                 .Configure(app => app.Run(async context =>
@@ -507,16 +518,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         {
             var appStarted = new SemaphoreSlim(0);
             var requestAborted = new SemaphoreSlim(0);
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
                 .UseKestrel()
                 .UseUrls("http://127.0.0.1:0")
+                .ConfigureServices(AddTestLogging)
                 .Configure(app => app.Run(async context =>
                 {
                     appStarted.Release();
 
                     var token = context.RequestAborted;
                     token.Register(() => requestAborted.Release(2));
-                    await requestAborted.WaitAsync().TimeoutAfter(TimeSpan.FromSeconds(10));
+                    await requestAborted.WaitAsync().TimeoutAfter(TestConstants.DefaultTimeout);
                 }));
 
             using (var host = builder.Build())
@@ -529,7 +541,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     socket.Send(Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n"));
                     await appStarted.WaitAsync();
                     socket.Shutdown(SocketShutdown.Send);
-                    await requestAborted.WaitAsync().TimeoutAfter(TimeSpan.FromSeconds(10));
+                    await requestAborted.WaitAsync().TimeoutAfter(TestConstants.DefaultTimeout);
                 }
             }
         }
@@ -537,9 +549,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [Fact]
         public void AbortingTheConnectionSendsFIN()
         {
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
                 .UseKestrel()
                 .UseUrls("http://127.0.0.1:0")
+                .ConfigureServices(AddTestLogging)
                 .Configure(app => app.Run(context =>
                 {
                     context.Abort();
@@ -556,6 +569,108 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     socket.Send(Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n"));
                     int result = socket.Receive(new byte[32]);
                     Assert.Equal(0, result);
+                }
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(ConnectionAdapterData))]
+        public async Task ConnectionClosedTokenFiresOnClientFIN(ListenOptions listenOptions)
+        {
+            var testContext = new TestServiceContext(LoggerFactory);
+            var appStartedTcs = new TaskCompletionSource<object>();
+            var connectionClosedTcs = new TaskCompletionSource<object>();
+
+            using (var server = new TestServer(context =>
+            {
+                appStartedTcs.SetResult(null);
+
+                var connectionLifetimeFeature = context.Features.Get<IConnectionLifetimeFeature>();
+                connectionLifetimeFeature.ConnectionClosed.Register(() => connectionClosedTcs.SetResult(null));
+
+                return Task.CompletedTask;
+            }, testContext, listenOptions))
+            {
+                using (var connection = server.CreateConnection())
+                {
+                    await connection.Send(
+                        "GET / HTTP/1.1",
+                        "Host:",
+                        "",
+                        "");
+
+                    await appStartedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+
+                    connection.Socket.Shutdown(SocketShutdown.Send);
+
+                    await connectionClosedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+                }
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(ConnectionAdapterData))]
+        public async Task ConnectionClosedTokenFiresOnServerFIN(ListenOptions listenOptions)
+        {
+            var testContext = new TestServiceContext(LoggerFactory);
+            var connectionClosedTcs = new TaskCompletionSource<object>();
+
+            using (var server = new TestServer(context =>
+            {
+                var connectionLifetimeFeature = context.Features.Get<IConnectionLifetimeFeature>();
+                connectionLifetimeFeature.ConnectionClosed.Register(() => connectionClosedTcs.SetResult(null));
+
+                return Task.CompletedTask;
+            }, testContext, listenOptions))
+            {
+                using (var connection = server.CreateConnection())
+                {
+                    await connection.Send(
+                        "GET / HTTP/1.1",
+                        "Host:",
+                        "Connection: close",
+                        "",
+                        "");
+
+                    await connectionClosedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+
+                    await connection.ReceiveEnd($"HTTP/1.1 200 OK",
+                        "Connection: close",
+                        $"Date: {server.Context.DateHeaderValue}",
+                        "Content-Length: 0",
+                        "",
+                        "");
+                }
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(ConnectionAdapterData))]
+        public async Task ConnectionClosedTokenFiresOnServerAbort(ListenOptions listenOptions)
+        {
+            var testContext = new TestServiceContext(LoggerFactory);
+            var connectionClosedTcs = new TaskCompletionSource<object>();
+
+            using (var server = new TestServer(context =>
+            {
+                var connectionLifetimeFeature = context.Features.Get<IConnectionLifetimeFeature>();
+                connectionLifetimeFeature.ConnectionClosed.Register(() => connectionClosedTcs.SetResult(null));
+
+                context.Abort();
+
+                return Task.CompletedTask;
+            }, testContext, listenOptions))
+            {
+                using (var connection = server.CreateConnection())
+                {
+                    await connection.Send(
+                        "GET / HTTP/1.1",
+                        "Host:",
+                        "",
+                        "");
+
+                    await connectionClosedTcs.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+                    await connection.ReceiveForcedEnd();
                 }
             }
         }
@@ -579,9 +694,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [InlineData("http://localhost/path%20with%20space?q=abc%20123", "/path with space", "abc 123")]
         public async Task CanHandleRequestsWithUrlInAbsoluteForm(string requestUrl, string expectedPath, string queryValue)
         {
-            var pathTcs = new TaskCompletionSource<PathString>();
-            var rawTargetTcs = new TaskCompletionSource<string>();
-            var queryTcs = new TaskCompletionSource<IQueryCollection>();
+            var pathTcs = new TaskCompletionSource<PathString>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var rawTargetTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var queryTcs = new TaskCompletionSource<IQueryCollection>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             using (var server = new TestServer(async context =>
                  {
@@ -589,13 +704,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                      queryTcs.TrySetResult(context.Request.Query);
                      rawTargetTcs.TrySetResult(context.Features.Get<IHttpRequestFeature>().RawTarget);
                      await context.Response.WriteAsync("Done");
-                 }))
+                 }, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
                     var requestTarget = new Uri(requestUrl, UriKind.Absolute);
                     var host = requestTarget.Authority;
-                    if (!requestTarget.IsDefaultPort)
+                    if (requestTarget.IsDefaultPort)
                     {
                         host += ":" + requestTarget.Port;
                     }
@@ -613,9 +728,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         "",
                         "4",
                         "Done")
-                        .TimeoutAfter(TimeSpan.FromSeconds(10));
+                        .TimeoutAfter(TestConstants.DefaultTimeout);
 
-                    await Task.WhenAll(pathTcs.Task, rawTargetTcs.Task, queryTcs.Task).TimeoutAfter(TimeSpan.FromSeconds(30));
+                    await Task.WhenAll(pathTcs.Task, rawTargetTcs.Task, queryTcs.Task).TimeoutAfter(TestConstants.DefaultTimeout);
                     Assert.Equal(new PathString(expectedPath), pathTcs.Task.Result);
                     Assert.Equal(requestUrl, rawTargetTcs.Task.Result);
                     if (queryValue == null)
@@ -638,10 +753,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             {
                 context.TraceIdentifier = knownId;
                 await context.Response.WriteAsync(context.TraceIdentifier);
-            }))
+            }, new TestServiceContext(LoggerFactory)))
             {
                 var requestId = await HttpClientSlim.GetStringAsync($"http://{server.EndPoint}")
-                    .TimeoutAfter(TimeSpan.FromSeconds(10));
+                    .TimeoutAfter(TestConstants.DefaultTimeout);
                 Assert.Equal(knownId, requestId);
             }
         }
@@ -657,7 +772,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 Assert.Equal(identifierLength, Encoding.ASCII.GetByteCount(context.TraceIdentifier));
                 context.Response.ContentLength = identifierLength;
                 await context.Response.WriteAsync(context.TraceIdentifier);
-            }))
+            }, new TestServiceContext(LoggerFactory)))
             {
                 var usedIds = new ConcurrentBag<string>();
                 var uri = $"http://{server.EndPoint}";
@@ -682,7 +797,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                            $"Date: {server.Context.DateHeaderValue}",
                            $"Content-Length: {identifierLength}",
                            "",
-                           "").TimeoutAfter(TimeSpan.FromSeconds(10));
+                           "").TimeoutAfter(TestConstants.DefaultTimeout);
 
                         var read = await connection.Reader.ReadAsync(buffer, 0, identifierLength);
                         Assert.Equal(identifierLength, read);
@@ -698,7 +813,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Http11KeptAliveByDefault(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoAppChunked, testContext, listenOptions))
             {
@@ -733,7 +848,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Http10NotKeptAliveByDefault(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoApp, testContext, listenOptions))
             {
@@ -773,7 +888,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Http10KeepAlive(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoAppChunked, testContext, listenOptions))
             {
@@ -808,7 +923,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Http10KeepAliveNotHonoredIfResponseContentLengthNotSet(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoApp, testContext, listenOptions))
             {
@@ -848,7 +963,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Http10KeepAliveHonoredIfResponseContentLengthSet(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoAppChunked, testContext, listenOptions))
             {
@@ -905,7 +1020,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task Expect100ContinueHonored(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(TestApp.EchoAppChunked, testContext, listenOptions))
             {
@@ -938,12 +1053,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task ZeroContentLengthAssumedOnNonKeepAliveRequestsWithoutContentLengthOrTransferEncodingHeader(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(async httpContext =>
             {
                 // This will hang if 0 content length is not assumed by the server
-                Assert.Equal(0, await httpContext.Request.Body.ReadAsync(new byte[1], 0, 1).TimeoutAfter(TimeSpan.FromSeconds(10)));
+                Assert.Equal(0, await httpContext.Request.Body.ReadAsync(new byte[1], 0, 1).TimeoutAfter(TestConstants.DefaultTimeout));
             }, testContext, listenOptions))
             {
                 using (var connection = server.CreateConnection())
@@ -988,7 +1103,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task ConnectionClosesWhenFinReceivedBeforeRequestCompletes(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
+            // FIN callbacks are scheduled so run inline to make this test more reliable
+            testContext.Scheduler = PipeScheduler.Inline;
 
             using (var server = new TestServer(TestApp.EchoAppChunked, testContext, listenOptions))
             {
@@ -1016,10 +1133,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(ConnectionAdapterData))]
         public async Task RequestsCanBeAbortedMidRead(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
-            var readTcs = new TaskCompletionSource<object>();
-            var registrationTcs = new TaskCompletionSource<int>();
+            var readTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var registrationTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             var requestId = 0;
 
             using (var server = new TestServer(async httpContext =>
@@ -1094,9 +1211,150 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 
         [Theory]
         [MemberData(nameof(ConnectionAdapterData))]
+        public async Task ServerCanAbortConnectionAfterUnobservedClose(ListenOptions listenOptions)
+        {
+            const int connectionPausedEventId = 4;
+            const int connectionFinSentEventId = 7;
+            const int maxRequestBufferSize = 4096;
+
+            var readCallbackUnwired = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var clientClosedConnection = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var serverClosedConnection = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var appFuncCompleted = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var mockLogger = new Mock<ILogger>();
+            mockLogger
+                .Setup(logger => logger.IsEnabled(It.IsAny<LogLevel>()))
+                .Returns(true);
+            mockLogger
+                .Setup(logger => logger.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(), It.IsAny<object>(), It.IsAny<Exception>(), It.IsAny<Func<object, Exception, string>>()))
+                .Callback<LogLevel, EventId, object, Exception, Func<object, Exception, string>>((logLevel, eventId, state, exception, formatter) =>
+                {
+                    if (eventId.Id == connectionPausedEventId)
+                    {
+                        readCallbackUnwired.TrySetResult(null);
+                    }
+                    else if (eventId.Id == connectionFinSentEventId)
+                    {
+                        serverClosedConnection.SetResult(null);
+                    }
+
+                    Logger.Log(logLevel, eventId, state, exception, formatter);
+                });
+
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            mockLoggerFactory
+                .Setup(factory => factory.CreateLogger(It.IsAny<string>()))
+                .Returns(Logger);
+            mockLoggerFactory
+                .Setup(factory => factory.CreateLogger(It.IsIn("Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv",
+                                                               "Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets")))
+                .Returns(mockLogger.Object);
+
+            var mockKestrelTrace = new Mock<KestrelTrace>(Logger) { CallBase = true };
+            var testContext = new TestServiceContext(mockLoggerFactory.Object)
+            {
+                Log = mockKestrelTrace.Object,
+                ServerOptions =
+                {
+                    Limits =
+                    {
+                        MaxRequestBufferSize = maxRequestBufferSize,
+                        MaxRequestLineSize = maxRequestBufferSize,
+                        MaxRequestHeadersTotalSize = maxRequestBufferSize,
+                    }
+                }
+            };
+
+            var scratchBuffer = new byte[maxRequestBufferSize * 8];
+
+            using (var server = new TestServer(async context =>
+            {
+                await clientClosedConnection.Task;
+
+                context.Abort();
+
+                await serverClosedConnection.Task;
+
+                appFuncCompleted.SetResult(null);
+            }, testContext, listenOptions))
+            {
+                using (var connection = server.CreateConnection())
+                {
+                    await connection.Send(
+                        "POST / HTTP/1.1",
+                        "Host:",
+                        $"Content-Length: {scratchBuffer.Length}",
+                        "",
+                        "");
+
+                    var ignore = connection.Stream.WriteAsync(scratchBuffer, 0, scratchBuffer.Length);
+
+                    // Wait until the read callback is no longer hooked up so that the connection disconnect isn't observed.
+                    await readCallbackUnwired.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+                }
+
+                clientClosedConnection.SetResult(null);
+
+                await appFuncCompleted.Task.TimeoutAfter(TestConstants.DefaultTimeout);
+            }
+
+            mockKestrelTrace.Verify(t => t.ConnectionStop(It.IsAny<string>()), Times.Once());
+        }
+
+        [Theory]
+        [MemberData(nameof(ConnectionAdapterData))]
+        public async Task AppCanHandleClientAbortingConnectionMidRequest(ListenOptions listenOptions)
+        {
+            var readTcs = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var mockKestrelTrace = new Mock<KestrelTrace>(Logger) { CallBase = true };
+            var testContext = new TestServiceContext()
+            {
+                Log = mockKestrelTrace.Object,
+            };
+
+            var scratchBuffer = new byte[4096];
+
+            using (var server = new TestServer(async context =>
+            {
+                try
+                {
+                    await context.Request.Body.CopyToAsync(Stream.Null);;
+                }
+                catch (Exception ex)
+                {
+                    readTcs.SetException(ex);
+                    throw;
+                }
+
+                readTcs.SetException(new Exception("This shouldn't be reached."));
+
+            }, testContext, listenOptions))
+            {
+                using (var connection = server.CreateConnection())
+                {
+                    await connection.Send(
+                        "POST / HTTP/1.1",
+                        "Host:",
+                        $"Content-Length: {scratchBuffer.Length * 2}",
+                        "",
+                        "");
+
+                    await connection.Stream.WriteAsync(scratchBuffer, 0, scratchBuffer.Length);
+                }
+
+                await Assert.ThrowsAnyAsync<IOException>(() => readTcs.Task).TimeoutAfter(TestConstants.DefaultTimeout);
+            }
+
+            mockKestrelTrace.Verify(t => t.ConnectionStop(It.IsAny<string>()), Times.Once());
+        }
+
+        [Theory]
+        [MemberData(nameof(ConnectionAdapterData))]
         public async Task RequestHeadersAreResetOnEachRequest(ListenOptions listenOptions)
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             IHeaderDictionary originalRequestHeaders = null;
             var firstRequest = true;
@@ -1108,7 +1366,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 if (firstRequest)
                 {
                     originalRequestHeaders = requestFeature.Headers;
-                    requestFeature.Headers = new FrameRequestHeaders();
+                    requestFeature.Headers = new HttpRequestHeaders();
                     firstRequest = false;
                 }
                 else
@@ -1149,7 +1407,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         {
             const string message = "Hello World";
 
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
 
             using (var server = new TestServer(async context =>
             {
@@ -1160,7 +1418,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 var read = 0;
                 while (read < message.Length)
                 {
-                    read += await duplexStream.ReadAsync(buffer, read, buffer.Length - read).TimeoutAfter(TimeSpan.FromSeconds(10));
+                    read += await duplexStream.ReadAsync(buffer, read, buffer.Length - read).TimeoutAfter(TestConstants.DefaultTimeout);
                 }
 
                 await duplexStream.WriteAsync(buffer, 0, read);
@@ -1184,11 +1442,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             }
         }
 
-        [Theory]
-        [MemberData(nameof(ConnectionAdapterData))]
-        public async Task HeadersAndStreamsAreReusedAcrossRequests(ListenOptions listenOptions)
+        [Fact]
+        public async Task HeadersAndStreamsAreReusedAcrossRequests()
         {
-            var testContext = new TestServiceContext();
+            var testContext = new TestServiceContext(LoggerFactory);
             var streamCount = 0;
             var requestHeadersCount = 0;
             var responseHeadersCount = 0;
@@ -1265,7 +1522,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [MemberData(nameof(HostHeaderData))]
         public async Task MatchesValidRequestTargetAndHostHeader(string request, string hostHeader)
         {
-            using (var server = new TestServer(context => Task.CompletedTask))
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1283,7 +1540,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         public async Task ServerConsumesKeepAliveContentLengthRequest()
         {
             // The app doesn't read the request body, so it should be consumed by the server
-            using (var server = new TestServer(context => Task.CompletedTask))
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1324,7 +1581,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         public async Task ServerConsumesKeepAliveChunkedRequest()
         {
             // The app doesn't read the request body, so it should be consumed by the server
-            using (var server = new TestServer(context => Task.CompletedTask))
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1372,7 +1629,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         public async Task NonKeepAliveRequestNotConsumedByAppCompletes()
         {
             // The app doesn't read the request body, so it should be consumed by the server
-            using (var server = new TestServer(context => Task.CompletedTask))
+            using (var server = new TestServer(context => Task.CompletedTask, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1405,7 +1662,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 
                 var response = Encoding.ASCII.GetBytes("goodbye");
                 await duplexStream.WriteAsync(response, 0, response.Length);
-            }))
+            }, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1431,7 +1688,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         {
             var appEvent = new ManualResetEventSlim();
             var delayEvent = new ManualResetEventSlim();
-            var serviceContext = new TestServiceContext
+            var serviceContext = new TestServiceContext(LoggerFactory)
             {
                 SystemClock = new SystemClock()
             };
@@ -1468,7 +1725,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         "",
                         "a");
 
-                    Assert.True(appEvent.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.True(appEvent.Wait(TestConstants.DefaultTimeout));
 
                     await Task.Delay(TimeSpan.FromSeconds(5));
 
@@ -1536,7 +1793,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 
                 context.Response.ContentLength = 6;
                 await context.Response.Body.WriteAsync(buffer, 0, 6);
-            }))
+            }, new TestServiceContext(LoggerFactory)))
             {
                 using (var connection = server.CreateConnection())
                 {
@@ -1567,7 +1824,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [Fact]
         public async Task SynchronousReadsCanBeDisallowedGlobally()
         {
-            var testContext = new TestServiceContext
+            var testContext = new TestServiceContext(LoggerFactory)
             {
                 ServerOptions = { AllowSynchronousIO = false }
             };
@@ -1615,9 +1872,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 
         private async Task TestRemoteIPAddress(string registerAddress, string requestAddress, string expectAddress)
         {
-            var builder = new WebHostBuilder()
+            var builder = TransportSelector.GetWebHostBuilder()
                 .UseKestrel()
                 .UseUrls($"http://{registerAddress}:0")
+                .ConfigureServices(AddTestLogging)
                 .Configure(app =>
                 {
                     app.Run(async context =>

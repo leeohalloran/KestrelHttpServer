@@ -1,18 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <Import Project="..\..\build\common.props" />
-
   <PropertyGroup>
     <AssemblyName>Microsoft.AspNetCore.Server.Kestrel.Https</AssemblyName>
     <RootNamespace>Microsoft.AspNetCore.Server.Kestrel.Https</RootNamespace>
     <Description>HTTPS support for the ASP.NET Core Kestrel cross-platform web server.</Description>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;netcoreapp2.1</TargetFrameworks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageTags>aspnetcore;kestrel</PackageTags>
     <NoWarn>CS1591;$(NoWarn)</NoWarn>
-    <EnableApiCheck>false</EnableApiCheck>
-    <!-- TODO: remove when https://github.com/dotnet/sdk/pull/1270 is fixed -->
-    <GenerateResourceMSBuildRuntime>CurrentRuntime</GenerateResourceMSBuildRuntime>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,13 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="$(AspNetCoreVersion)" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Update="HttpsStrings.resx">
-      <Generator></Generator>
-    </EmbeddedResource>
+    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="$(MicrosoftAspNetCoreHttpAbstractionsPackageVersion)" />
   </ItemGroup>
 
 </Project>

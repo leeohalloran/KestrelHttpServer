@@ -5,7 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Adapter.Internal;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core
@@ -14,9 +17,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
     /// Describes either an <see cref="IPEndPoint"/>, Unix domain socket path, or a file descriptor for an already open
     /// socket that Kestrel should bind to or open.
     /// </summary>
-    public class ListenOptions : IEndPointInformation
+    public class ListenOptions : IEndPointInformation, IConnectionBuilder
     {
         private FileHandleType _handleType;
+        internal readonly List<Func<ConnectionDelegate, ConnectionDelegate>> _middleware = new List<Func<ConnectionDelegate, ConnectionDelegate>>();
 
         internal ListenOptions(IPEndPoint endPoint)
         {
@@ -116,6 +120,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
         public bool NoDelay { get; set; } = true;
 
         /// <summary>
+        /// The protocols enabled on this endpoint.
+        /// </summary>
+        /// <remarks>Defaults to HTTP/1.x only.</remarks>
+        internal HttpProtocols Protocols { get; set; } = HttpProtocols.Http1;
+
+        /// <summary>
         /// Gets the <see cref="List{IConnectionAdapter}"/> that allows each connection <see cref="System.IO.Stream"/>
         /// to be intercepted and transformed.
         /// Configured by the <c>UseHttps()</c> and <see cref="Hosting.ListenOptionsConnectionLoggingExtensions.UseConnectionLogging(ListenOptions)"/>
@@ -126,10 +136,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
         /// </remarks>
         public List<IConnectionAdapter> ConnectionAdapters { get; } = new List<IConnectionAdapter>();
 
+        public IServiceProvider ApplicationServices => KestrelServerOptions?.ApplicationServices;
+
         /// <summary>
         /// Gets the name of this endpoint to display on command-line when the web server starts.
         /// </summary>
-        internal string GetDisplayName()
+        internal virtual string GetDisplayName()
         {
             var scheme = ConnectionAdapters.Any(f => f.IsHttps)
                 ? "https"
@@ -149,5 +161,33 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
         }
 
         public override string ToString() => GetDisplayName();
+
+        public IConnectionBuilder Use(Func<ConnectionDelegate, ConnectionDelegate> middleware)
+        {
+            _middleware.Add(middleware);
+            return this;
+        }
+
+        public ConnectionDelegate Build()
+        {
+            ConnectionDelegate app = context =>
+            {
+                return Task.CompletedTask;
+            };
+
+            for (int i = _middleware.Count - 1; i >= 0; i--)
+            {
+                var component = _middleware[i];
+                app = component(app);
+            }
+
+            return app;
+        }
+
+        internal virtual async Task BindAsync(AddressBindContext context)
+        {
+            await AddressBinder.BindEndpointAsync(this, context).ConfigureAwait(false);
+            context.Addresses.Add(GetDisplayName());
+        }
     }
 }

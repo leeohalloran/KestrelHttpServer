@@ -1,5 +1,16 @@
 <Project>
+  <Import Project="dependencies.props" />
+
+  <PropertyGroup>
+    <EnableBenchmarkValidation>true</EnableBenchmarkValidation>
+    <!-- These properties are use by the automation that updates dependencies.props -->
+    <LineupPackageId>Internal.AspNetCore.Universe.Lineup</LineupPackageId>
+    <LineupPackageRestoreSource>https://dotnet.myget.org/F/aspnetcore-dev/api/v3/index.json</LineupPackageRestoreSource>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ExcludeFromTest Include="$(RepositoryRoot)test\Kestrel.Performance\Kestrel.Performance.csproj" />
+    <DotNetCoreRuntime Include="$(MicrosoftNETCoreApp20PackageVersion)" />
+    <DotNetCoreRuntime Include="$(MicrosoftNETCoreApp21PackageVersion)" />
+    <DotNetCoreRuntime Include="$(MicrosoftNETCoreApp22PackageVersion)" />
   </ItemGroup>
 </Project>

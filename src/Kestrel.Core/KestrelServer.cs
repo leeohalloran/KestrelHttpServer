@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -26,7 +27,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
 
         private bool _hasStarted;
         private int _stopping;
-        private readonly TaskCompletionSource<object> _stoppedTcs = new TaskCompletionSource<object>();
+        private readonly TaskCompletionSource<object> _stoppedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public KestrelServer(IOptions<KestrelServerOptions> options, ITransportFactory transportFactory, ILoggerFactory loggerFactory)
             : this(transportFactory, CreateServiceContext(options, loggerFactory))
@@ -44,10 +45,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
             _transportFactory = transportFactory;
             ServiceContext = serviceContext;
 
-            var frameHeartbeatManager = new FrameHeartbeatManager(serviceContext.ConnectionManager);
+            var httpHeartbeatManager = new HttpHeartbeatManager(serviceContext.ConnectionManager);
             _heartbeat = new Heartbeat(
-                new IHeartbeatHandler[] { serviceContext.DateHeaderValueManager, frameHeartbeatManager },
-                serviceContext.SystemClock, Trace);
+                new IHeartbeatHandler[] { serviceContext.DateHeaderValueManager, httpHeartbeatManager },
+                serviceContext.SystemClock,
+                DebuggerWrapper.Singleton,
+                Trace);
 
             Features = new FeatureCollection();
             _serverAddresses = new ServerAddressesFeature();
@@ -68,9 +71,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
             var serverOptions = options.Value ?? new KestrelServerOptions();
             var logger = loggerFactory.CreateLogger("Microsoft.AspNetCore.Server.Kestrel");
             var trace = new KestrelTrace(logger);
-            var connectionManager = new FrameConnectionManager(
+            var connectionManager = new HttpConnectionManager(
                 trace,
-                serverOptions.Limits.MaxConcurrentConnections,
                 serverOptions.Limits.MaxConcurrentUpgradedConnections);
 
             var systemClock = new SystemClock();
@@ -78,15 +80,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
 
             // TODO: This logic will eventually move into the IConnectionHandler<T> and off
             // the service context once we get to https://github.com/aspnet/KestrelHttpServer/issues/1662
-            IThreadPool threadPool = null;
+            PipeScheduler scheduler = null;
             switch (serverOptions.ApplicationSchedulingMode)
             {
                 case SchedulingMode.Default:
                 case SchedulingMode.ThreadPool:
-                    threadPool = new LoggingThreadPool(trace);
+                    scheduler = PipeScheduler.ThreadPool;
                     break;
                 case SchedulingMode.Inline:
-                    threadPool = new InlineLoggingThreadPool(trace);
+                    scheduler = PipeScheduler.Inline;
                     break;
                 default:
                     throw new NotSupportedException(CoreStrings.FormatUnknownTransportMode(serverOptions.ApplicationSchedulingMode));
@@ -95,8 +97,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
             return new ServiceContext
             {
                 Log = trace,
-                HttpParserFactory = frameParser => new HttpParser<FrameAdapter>(frameParser.Frame.ServiceContext.Log.IsEnabled(LogLevel.Information)),
-                ThreadPool = threadPool,
+                HttpParser = new HttpParser<Http1ParsingHandler>(trace.IsEnabled(LogLevel.Information)),
+                Scheduler = scheduler,
                 SystemClock = systemClock,
                 DateHeaderValueManager = dateHeaderValueManager,
                 ConnectionManager = connectionManager,
@@ -112,7 +114,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
 
         private IKestrelTrace Trace => ServiceContext.Log;
 
-        private FrameConnectionManager ConnectionManager => ServiceContext.ConnectionManager;
+        private HttpConnectionManager ConnectionManager => ServiceContext.ConnectionManager;
 
         public async Task StartAsync<TContext>(IHttpApplication<TContext> application, CancellationToken cancellationToken)
         {
@@ -135,14 +137,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
 
                 async Task OnBind(ListenOptions endpoint)
                 {
-                    var connectionHandler = new ConnectionHandler<TContext>(endpoint, ServiceContext, application);
-                    var transport = _transportFactory.Create(endpoint, connectionHandler);
+                    // Add the HTTP middleware as the terminal connection middleware
+                    endpoint.UseHttpServer(endpoint.ConnectionAdapters, ServiceContext, application, endpoint.Protocols);
+
+                    var connectionDelegate = endpoint.Build();
+
+                    // Add the connection limit middleware
+                    if (Options.Limits.MaxConcurrentConnections.HasValue)
+                    {
+                        connectionDelegate = new ConnectionLimitMiddleware(connectionDelegate, Options.Limits.MaxConcurrentConnections.Value, Trace).OnConnectionAsync;
+                    }
+
+                    var connectionDispatcher = new ConnectionDispatcher(ServiceContext, connectionDelegate);
+                    var transport = _transportFactory.Create(endpoint, connectionDispatcher);
                     _transports.Add(transport);
 
                     await transport.BindAsync().ConfigureAwait(false);
                 }
 
-                await AddressBinder.BindAsync(_serverAddresses, Options.ListenOptions, Trace, OnBind).ConfigureAwait(false);
+                await AddressBinder.BindAsync(_serverAddresses, Options, Trace, OnBind).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -207,6 +220,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
 
         private void ValidateOptions()
         {
+            Options.ConfigurationLoader?.Load();
+
             if (Options.Limits.MaxRequestBufferSize.HasValue &&
                 Options.Limits.MaxRequestBufferSize < Options.Limits.MaxRequestLineSize)
             {

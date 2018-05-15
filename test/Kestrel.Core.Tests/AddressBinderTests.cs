@@ -2,11 +2,10 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Protocols;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Testing;
@@ -51,23 +50,53 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [InlineData("randomhost")]
         [InlineData("+")]
         [InlineData("contoso.com")]
-        public async Task DefaultsToIPv6AnyOnInvalidIPAddress(string host)
+        public void ParseAddressDefaultsToAnyIPOnInvalidIPAddress(string host)
         {
-            var addresses = new ServerAddressesFeature();
-            addresses.Addresses.Add($"http://{host}");
-            var options = new List<ListenOptions>();
+            var options = new KestrelServerOptions();
+            var listenOptions = AddressBinder.ParseAddress($"http://{host}", out var https);
+            Assert.IsType<AnyIPListenOptions>(listenOptions);
+            Assert.Equal(ListenType.IPEndPoint, listenOptions.Type);
+            Assert.Equal(IPAddress.IPv6Any, listenOptions.IPEndPoint.Address);
+            Assert.Equal(80, listenOptions.IPEndPoint.Port);
+            Assert.False(https);
+        }
 
-            var tcs = new TaskCompletionSource<ListenOptions>();
-            await AddressBinder.BindAsync(addresses,
-                options,
-                NullLogger.Instance,
-                endpoint =>
-                {
-                    tcs.TrySetResult(endpoint);
-                    return Task.CompletedTask;
-                });
-            var result = await tcs.Task;
-            Assert.Equal(IPAddress.IPv6Any, result.IPEndPoint.Address);
+        [Fact]
+        public void ParseAddressLocalhost()
+        {
+            var options = new KestrelServerOptions();
+            var listenOptions = AddressBinder.ParseAddress("http://localhost", out var https);
+            Assert.IsType<LocalhostListenOptions>(listenOptions);
+            Assert.Equal(ListenType.IPEndPoint, listenOptions.Type);
+            Assert.Equal(IPAddress.Loopback, listenOptions.IPEndPoint.Address);
+            Assert.Equal(80, listenOptions.IPEndPoint.Port);
+            Assert.False(https);
+        }
+
+        [Fact]
+        public void ParseAddressUnixPipe()
+        {
+            var options = new KestrelServerOptions();
+            var listenOptions = AddressBinder.ParseAddress("http://unix:/tmp/kestrel-test.sock", out var https);
+            Assert.Equal(ListenType.SocketPath, listenOptions.Type);
+            Assert.Equal("/tmp/kestrel-test.sock", listenOptions.SocketPath);
+            Assert.False(https);
+        }
+
+        [Theory]
+        [InlineData("http://10.10.10.10:5000/", "10.10.10.10", 5000, false)]
+        [InlineData("http://[::1]:5000", "::1", 5000, false)]
+        [InlineData("http://[::1]", "::1", 80, false)]
+        [InlineData("http://127.0.0.1", "127.0.0.1", 80, false)]
+        [InlineData("https://127.0.0.1", "127.0.0.1", 443, true)]
+        public void ParseAddressIP(string address, string ip, int port, bool isHttps)
+        {
+            var options = new KestrelServerOptions();
+            var listenOptions = AddressBinder.ParseAddress(address, out var https);
+            Assert.Equal(ListenType.IPEndPoint, listenOptions.Type);
+            Assert.Equal(IPAddress.Parse(ip), listenOptions.IPEndPoint.Address);
+            Assert.Equal(port, listenOptions.IPEndPoint.Port);
+            Assert.Equal(isHttps, https);
         }
 
         [Fact]
@@ -75,13 +104,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         {
             var addresses = new ServerAddressesFeature();
             addresses.Addresses.Add("http://localhost:5000");
-            var options = new List<ListenOptions>();
+            var options = new KestrelServerOptions();
 
             await Assert.ThrowsAsync<IOException>(() =>
                 AddressBinder.BindAsync(addresses,
-                options,
-                NullLogger.Instance,
-                endpoint => throw new AddressInUseException("already in use")));
+                    options,
+                    NullLogger.Instance,
+                    endpoint => throw new AddressInUseException("already in use")));
         }
 
         [Theory]
@@ -93,7 +122,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
             var logger = new MockLogger();
             var addresses = new ServerAddressesFeature();
             addresses.Addresses.Add(address);
-            var options = new List<ListenOptions>();
+            var options = new KestrelServerOptions();
 
             var ipV6Attempt = false;
             var ipV4Attempt = false;

@@ -7,21 +7,24 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Testing;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
 {
-    public class RequestBodyTimeoutTests
+    public class RequestBodyTimeoutTests : LoggedTest
     {
         [Fact]
         public async Task RequestTimesOutWhenRequestBodyNotReceivedAtSpecifiedMinimumRate()
         {
             var gracePeriod = TimeSpan.FromSeconds(5);
             var systemClock = new MockSystemClock();
-            var serviceContext = new TestServiceContext
+            var serviceContext = new TestServiceContext(LoggerFactory)
             {
                 SystemClock = systemClock,
                 DateHeaderValueManager = new DateHeaderValueManager(systemClock)
@@ -47,7 +50,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         "",
                         "");
 
-                    Assert.True(appRunningEvent.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.True(appRunningEvent.Wait(TestConstants.DefaultTimeout));
                     systemClock.UtcNow += gracePeriod + TimeSpan.FromSeconds(1);
 
                     await connection.Receive(
@@ -68,10 +71,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         {
             // This test requires a real clock since we can't control when the drain timeout is set
             var systemClock = new SystemClock();
-            var serviceContext = new TestServiceContext
+            var serviceContext = new TestServiceContext(LoggerFactory)
             {
                 SystemClock = systemClock,
-                DateHeaderValueManager = new DateHeaderValueManager(systemClock)
+                DateHeaderValueManager = new DateHeaderValueManager(systemClock),
             };
 
             var appRunningEvent = new ManualResetEventSlim();
@@ -93,28 +96,31 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         "",
                         "");
 
-                    Assert.True(appRunningEvent.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.True(appRunningEvent.Wait(TestConstants.DefaultTimeout));
 
                     await connection.Receive(
-                        "HTTP/1.1 408 Request Timeout",
-                        "Connection: close",
+                        "HTTP/1.1 200 OK",
                         "");
                     await connection.ReceiveStartsWith(
                         "Date: ");
+                    // Disconnected due to the timeout
                     await connection.ReceiveForcedEnd(
                         "Content-Length: 0",
                         "",
                         "");
                 }
             }
+
+            Assert.Contains(TestSink.Writes, w => w.EventId.Id == 32 && w.LogLevel == LogLevel.Information);
+            Assert.Contains(TestSink.Writes, w => w.EventId.Id == 33 && w.LogLevel == LogLevel.Information);
         }
 
-        [Fact]
+        [Fact(Skip="https://github.com/aspnet/KestrelHttpServer/issues/2464")]
         public async Task ConnectionClosedEvenIfAppSwallowsException()
         {
             var gracePeriod = TimeSpan.FromSeconds(5);
             var systemClock = new MockSystemClock();
-            var serviceContext = new TestServiceContext
+            var serviceContext = new TestServiceContext(LoggerFactory)
             {
                 SystemClock = systemClock,
                 DateHeaderValueManager = new DateHeaderValueManager(systemClock)
@@ -153,9 +159,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                         "",
                         "");
 
-                    Assert.True(appRunningEvent.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.True(appRunningEvent.Wait(TestConstants.DefaultTimeout), "AppRunningEvent timed out.");
                     systemClock.UtcNow += gracePeriod + TimeSpan.FromSeconds(1);
-                    Assert.True(exceptionSwallowedEvent.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.True(exceptionSwallowedEvent.Wait(TestConstants.DefaultTimeout), "ExceptionSwallowedEvent timed out.");
 
                     await connection.Receive(
                         "HTTP/1.1 200 OK",

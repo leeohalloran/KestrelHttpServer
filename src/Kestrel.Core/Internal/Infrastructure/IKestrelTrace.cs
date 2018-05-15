@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2.HPack;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
@@ -42,8 +44,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 
         void RequestBodyDone(string connectionId, string traceIdentifier);
 
+        void RequestBodyNotEntirelyRead(string connectionId, string traceIdentifier);
+
+        void RequestBodyDrainTimedOut(string connectionId, string traceIdentifier);
+
         void RequestBodyMininumDataRateNotSatisfied(string connectionId, string traceIdentifier, double rate);
 
         void ResponseMininumDataRateNotSatisfied(string connectionId, string traceIdentifier);
+
+        void Http2ConnectionError(string connectionId, Http2ConnectionErrorException ex);
+
+        void Http2StreamError(string connectionId, Http2StreamErrorException ex);
+
+        void HPackDecodingError(string connectionId, int streamId, HPackDecodingException ex);
     }
 }

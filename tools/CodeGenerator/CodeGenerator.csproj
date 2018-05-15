@@ -1,7 +1,5 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <Import Project="..\..\build\common.props" />
-
   <PropertyGroup>
     <TargetFramework>netcoreapp2.0</TargetFramework>
     <OutputType>Exe</OutputType>
@@ -9,18 +7,15 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\Kestrel.Core\Kestrel.Core.csproj" />
-  </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Hosting" Version="$(AspNetCoreVersion)" />
-    <PackageReference Include="Microsoft.AspNetCore.Http.Features" Version="$(AspNetCoreVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Hosting" Version="$(MicrosoftAspNetCoreHostingPackageVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Http.Features" Version="$(MicrosoftAspNetCoreHttpFeaturesPackageVersion)" />
   </ItemGroup>
 
   <PropertyGroup>
-    <StartWorkingDirectory>$(MSBuildThisFileDirectory)..\..\src\Kestrel.Core</StartWorkingDirectory>
-    <StartArguments>Internal\Http\FrameHeaders.Generated.cs Internal\Http\Frame.Generated.cs Internal\Infrastructure\HttpUtilities.Generated.cs</StartArguments>
+    <StartWorkingDirectory>$(MSBuildThisFileDirectory)..\..\</StartWorkingDirectory>
+    <StartArguments>src/Kestrel.Core/Internal/Http/HttpHeaders.Generated.cs src/Kestrel.Core/Internal/Http/HttpProtocol.Generated.cs src/Kestrel.Core/Internal/Infrastructure/HttpUtilities.Generated.cs src/Kestrel.Transport.Abstractions/Internal/TransportConnection.Generated.cs</StartArguments>
   </PropertyGroup>
 
 </Project>

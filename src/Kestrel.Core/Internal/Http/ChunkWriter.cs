@@ -2,12 +2,13 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 {
-    public static class ChunkWriter
+    internal static class ChunkWriter
     {
         private static readonly ArraySegment<byte> _endChunkBytes = CreateAsciiByteArraySegment("\r\n");
         private static readonly byte[] _hex = Encoding.ASCII.GetBytes("0123456789abcdef");
@@ -47,16 +48,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             return new ArraySegment<byte>(bytes, offset, 10 - offset);
         }
 
-        public static int WriteBeginChunkBytes(ref WritableBufferWriter start, int dataCount)
+        internal static int WriteBeginChunkBytes(ref CountingBufferWriter<PipeWriter> start, int dataCount)
         {
             var chunkSegment = BeginChunkBytes(dataCount);
-            start.Write(chunkSegment.Array, chunkSegment.Offset, chunkSegment.Count);
+            start.Write(new ReadOnlySpan<byte>(chunkSegment.Array, chunkSegment.Offset, chunkSegment.Count));
             return chunkSegment.Count;
         }
 
-        public static void WriteEndChunkBytes(ref WritableBufferWriter start)
+        internal static void WriteEndChunkBytes(ref CountingBufferWriter<PipeWriter> start)
         {
-            start.Write(_endChunkBytes.Array, _endChunkBytes.Offset, _endChunkBytes.Count);
+            start.Write(new ReadOnlySpan<byte>(_endChunkBytes.Array, _endChunkBytes.Offset, _endChunkBytes.Count));
         }
     }
 }

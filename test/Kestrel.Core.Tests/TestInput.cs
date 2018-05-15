@@ -2,10 +2,15 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 using Microsoft.AspNetCore.Testing;
 using Moq;
 
@@ -13,54 +18,65 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
 {
     class TestInput : IDisposable
     {
-        private MemoryPool _memoryPool;
-        private PipeFactory _pipelineFactory;
+        private MemoryPool<byte> _memoryPool;
 
         public TestInput()
         {
-            _memoryPool = new MemoryPool();
-            _pipelineFactory = new PipeFactory();
-            Pipe = _pipelineFactory.Create();
+            _memoryPool = KestrelMemoryPool.Create();
+            var options = new PipeOptions(pool: _memoryPool, readerScheduler: PipeScheduler.Inline, writerScheduler: PipeScheduler.Inline, useSynchronizationContext: false);
+            var pair = DuplexPipe.CreateConnectionPair(options, options);
+            Transport = pair.Transport;
+            Application = pair.Application;
 
-            FrameContext = new FrameContext
+            var connectionFeatures = new FeatureCollection();
+            connectionFeatures.Set(Mock.Of<IConnectionLifetimeFeature>());
+            connectionFeatures.Set(Mock.Of<IBytesWrittenFeature>());
+
+            Http1ConnectionContext = new Http1ConnectionContext
             {
                 ServiceContext = new TestServiceContext(),
-                Input = Pipe.Reader,
-                PipeFactory = _pipelineFactory,
+                ConnectionFeatures = connectionFeatures,
+                Application = Application,
+                Transport = Transport,
+                MemoryPool = _memoryPool,
                 TimeoutControl = Mock.Of<ITimeoutControl>()
             };
 
-            Frame = new Frame<object>(null, FrameContext);
-            Frame.FrameControl = Mock.Of<IFrameControl>();
+            Http1Connection = new Http1Connection(Http1ConnectionContext);
+            Http1Connection.HttpResponseControl = Mock.Of<IHttpResponseControl>();
         }
 
-        public IPipe Pipe { get; }
+        public IDuplexPipe Transport { get; }
 
-        public PipeFactory PipeFactory => _pipelineFactory;
+        public IDuplexPipe Application { get; }
 
-        public FrameContext FrameContext { get;  }
+        public Http1ConnectionContext Http1ConnectionContext { get; }
 
-        public Frame Frame { get; set; }
+        public Http1Connection Http1Connection { get; set; }
 
         public void Add(string text)
         {
             var data = Encoding.ASCII.GetBytes(text);
-            Pipe.Writer.WriteAsync(data).Wait();
+            async Task Write() => await Application.Output.WriteAsync(data);
+            Write().Wait();
         }
 
         public void Fin()
         {
-            Pipe.Writer.Complete();
+            Application.Output.Complete();
         }
 
         public void Cancel()
         {
-            Pipe.Reader.CancelPendingRead();
+            Transport.Input.CancelPendingRead();
         }
 
         public void Dispose()
         {
-            _pipelineFactory.Dispose();
+            Application.Input.Complete();
+            Application.Output.Complete();
+            Transport.Input.Complete();
+            Transport.Output.Complete();
             _memoryPool.Dispose();
         }
     }

@@ -9,18 +9,11 @@ using System.Text;
 
 namespace CodeGenerator
 {
-    // This project can output the Class library as a NuGet Package.
-    // To enable this option, right-click on the project and select the Properties menu item. In the Build tab select "Produce outputs on build".
     public class KnownHeaders
     {
         static string Each<T>(IEnumerable<T> values, Func<T, string> formatter)
         {
             return values.Any() ? values.Select(formatter).Aggregate((a, b) => a + b) : "";
-        }
-
-        static string If(bool condition, Func<string> formatter)
-        {
-            return condition ? formatter() : "";
         }
 
         static string AppendSwitch(IEnumerable<IGrouping<int, KnownHeader>> values, string className) =>
@@ -36,7 +29,7 @@ namespace CodeGenerator
                             {{{(header.Identifier == "ContentLength" ? $@"
                                 if (_contentLength.HasValue)
                                 {{
-                                    ThrowMultipleContentLengthsException();
+                                    BadHttpRequestException.Throw(RequestRejectionReason.MultipleContentLengths);
                                 }}
                                 else
                                 {{
@@ -68,6 +61,8 @@ namespace CodeGenerator
             public byte[] Bytes => Encoding.ASCII.GetBytes($"\r\n{Name}: ");
             public int BytesOffset { get; set; }
             public int BytesCount { get; set; }
+            public bool ExistenceCheck { get; set; }
+            public bool FastCount { get; set; }
             public bool EnhancedSetter { get; set; }
             public bool PrimaryHeader { get; set; }
             public string TestBit() => $"(_bits & {1L << Index}L) != 0";
@@ -168,6 +163,15 @@ namespace CodeGenerator
                 "Access-Control-Request-Method",
                 "Access-Control-Request-Headers",
             };
+            var requestHeadersExistence = new[]
+            {
+                "Connection",
+                "Transfer-Encoding",
+            };
+            var requestHeadersCount = new[]
+            {
+                "Host"
+            };
             var requestHeaders = commonHeaders.Concat(new[]
             {
                 "Accept",
@@ -197,7 +201,9 @@ namespace CodeGenerator
             {
                 Name = header,
                 Index = index,
-                PrimaryHeader = requestPrimaryHeaders.Contains(header)
+                PrimaryHeader = requestPrimaryHeaders.Contains(header),
+                ExistenceCheck = requestHeadersExistence.Contains(header),
+                FastCount = requestHeadersCount.Contains(header)
             })
             .Concat(new[] { new KnownHeader
             {
@@ -209,6 +215,13 @@ namespace CodeGenerator
             Debug.Assert(requestHeaders.Length <= 64);
             Debug.Assert(requestHeaders.Max(x => x.Index) <= 62);
 
+            var responseHeadersExistence = new[]
+            {
+                "Connection",
+                "Server",
+                "Date",
+                "Transfer-Encoding"
+            };
             var enhancedHeaders = new[]
             {
                 "Connection",
@@ -245,6 +258,7 @@ namespace CodeGenerator
                 Name = header,
                 Index = index,
                 EnhancedSetter = enhancedHeaders.Contains(header),
+                ExistenceCheck = responseHeadersExistence.Contains(header),
                 PrimaryHeader = responsePrimaryHeaders.Contains(header)
             })
             .Concat(new[] { new KnownHeader
@@ -265,14 +279,14 @@ namespace CodeGenerator
                 {
                     Headers = requestHeaders,
                     HeadersByLength = requestHeaders.GroupBy(x => x.Name.Length),
-                    ClassName = "FrameRequestHeaders",
+                    ClassName = "HttpRequestHeaders",
                     Bytes = default(byte[])
                 },
                 new
                 {
                     Headers = responseHeaders,
                     HeadersByLength = responseHeaders.GroupBy(x => x.Name.Length),
-                    ClassName = "FrameResponseHeaders",
+                    ClassName = "HttpResponseHeaders",
                     Bytes = responseHeaders.SelectMany(header => header.Bytes).ToArray()
                 }
             };
@@ -292,6 +306,7 @@ namespace CodeGenerator
 using System;
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
+using System.Buffers;
 using System.IO.Pipelines;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
@@ -310,6 +325,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
         private long _bits = 0;
         private HeaderReferences _headers;
+{Each(loop.Headers.Where(header => header.ExistenceCheck), header => $@"
+        public bool Has{header.Identifier} => {header.TestBit()};")}
+{Each(loop.Headers.Where(header => header.FastCount), header => $@"
+        public int {header.Identifier}Count => _headers._{header.Identifier}.Count;")}
         {Each(loop.Headers, header => $@"
         public StringValues Header{header.Identifier}
         {{{(header.Identifier == "ContentLength" ? $@"
@@ -343,7 +362,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             }}")}
         }}")}
 {Each(loop.Headers.Where(header => header.EnhancedSetter), header => $@"
-        public void SetRaw{header.Identifier}(StringValues value, byte[] raw)
+        public void SetRaw{header.Identifier}(in StringValues value, byte[] raw)
         {{
             {header.SetBit()};
             _headers._{header.Identifier} = value;
@@ -382,8 +401,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             return MaybeUnknown?.TryGetValue(key, out value) ?? false;
         }}
 
-        protected override void SetValueFast(string key, StringValues value)
-        {{{(loop.ClassName == "FrameResponseHeaders" ? @"
+        protected override void SetValueFast(string key, in StringValues value)
+        {{{(loop.ClassName == "HttpResponseHeaders" ? @"
             ValidateHeaderCharacters(value);" : "")}
             switch (key.Length)
             {{{Each(loop.HeadersByLength, byLength => $@"
@@ -404,8 +423,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             SetValueUnknown(key, value);
         }}
 
-        protected override bool AddValueFast(string key, StringValues value)
-        {{{(loop.ClassName == "FrameResponseHeaders" ? @"
+        protected override bool AddValueFast(string key, in StringValues value)
+        {{{(loop.ClassName == "HttpResponseHeaders" ? @"
             ValidateHeaderCharacters(value);" : "")}
             switch (key.Length)
             {{{Each(loop.HeadersByLength, byLength => $@"
@@ -431,7 +450,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
                     }}
                     break;")}
             }}
-{(loop.ClassName == "FrameResponseHeaders" ? @"
+{(loop.ClassName == "HttpResponseHeaders" ? @"
             ValidateHeaderCharacters(key);" : "")}
             Unknown.Add(key, value);
             // Return true, above will throw and exit for false
@@ -474,7 +493,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             _contentLength = null;
             var tempBits = _bits;
             _bits = 0;
-            if(FrameHeaders.BitCount(tempBits) > 12)
+            if(HttpHeaders.BitCount(tempBits) > 12)
             {{
                 _headers = default(HeaderReferences);
                 return;
@@ -521,8 +540,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
             return true;
         }}
-        {(loop.ClassName == "FrameResponseHeaders" ? $@"
-        protected void CopyToFast(ref WritableBufferWriter output)
+        {(loop.ClassName == "HttpResponseHeaders" ? $@"
+        internal void CopyToFast(ref CountingBufferWriter<PipeWriter> output)
         {{
             var tempBits = _bits | (_contentLength.HasValue ? {1L << 63}L : 0);
             {Each(loop.Headers.Where(header => header.Identifier != "ContentLength").OrderBy(h => !h.PrimaryHeader), header => $@"
@@ -540,7 +559,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
                             var value = _headers._{header.Identifier}[i];
                             if (value != null)
                             {{
-                                output.Write(_headerBytes, {header.BytesOffset}, {header.BytesCount});
+                                output.Write(new ReadOnlySpan<byte>(_headerBytes, {header.BytesOffset}, {header.BytesCount}));
                                 PipelineExtensions.WriteAsciiNoValidation(ref output, value);
                             }}
                         }}
@@ -554,7 +573,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
                 }}{(header.Identifier == "Server" ? $@"
                 if ((tempBits & {1L << 63}L) != 0)
                 {{
-                    output.Write(_headerBytes, {loop.Headers.First(x => x.Identifier == "ContentLength").BytesOffset}, {loop.Headers.First(x => x.Identifier == "ContentLength").BytesCount});
+                    output.Write(new ReadOnlySpan<byte>(_headerBytes, {loop.Headers.First(x => x.Identifier == "ContentLength").BytesOffset}, {loop.Headers.First(x => x.Identifier == "ContentLength").BytesCount}));
                     PipelineExtensions.WriteNumeric(ref output, (ulong)ContentLength.Value);
 
                     if((tempBits & ~{1L << 63}L) == 0)
@@ -564,7 +583,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
                     tempBits &= ~{1L << 63}L;
                 }}" : "")}")}
         }}" : "")}
-        {(loop.ClassName == "FrameRequestHeaders" ? $@"
+        {(loop.ClassName == "HttpRequestHeaders" ? $@"
         public unsafe void Append(byte* pKeyBytes, int keyLength, string value)
         {{
             var pUB = pKeyBytes;

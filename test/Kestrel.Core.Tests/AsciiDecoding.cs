@@ -3,6 +3,7 @@
 
 using System;
 using System.Linq;
+using System.Numerics;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Xunit;
 
@@ -13,15 +14,24 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [Fact]
         private void FullAsciiRangeSupported()
         {
-            var byteRange = Enumerable.Range(1, 127).Select(x => (byte)x).ToArray();
-            var s = new Span<byte>(byteRange).GetAsciiStringNonNullCharacters();
+            var byteRange = Enumerable.Range(1, 127).Select(x => (byte)x);
 
-            Assert.Equal(s.Length, byteRange.Length);
+            var byteArray = byteRange
+                .Concat(byteRange)
+                .Concat(byteRange)
+                .Concat(byteRange)
+                .Concat(byteRange)
+                .Concat(byteRange)
+                .ToArray();
 
-            for (var i = 1; i < byteRange.Length; i++)
+            var s = new Span<byte>(byteArray).GetAsciiStringNonNullCharacters();
+
+            Assert.Equal(s.Length, byteArray.Length);
+
+            for (var i = 1; i < byteArray.Length; i++)
             {
                 var sb = (byte)s[i];
-                var b = byteRange[i];
+                var b = byteArray[i];
 
                 Assert.Equal(sb, b);
             }
@@ -32,7 +42,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [InlineData(0x80)]
         private void ExceptionThrownForZeroOrNonAscii(byte b)
         {
-            for (var length = 1; length < 16; length++)
+            for (var length = 1; length < Vector<sbyte>.Count * 4; length++)
             {
                 for (var position = 0; position < length; position++)
                 {

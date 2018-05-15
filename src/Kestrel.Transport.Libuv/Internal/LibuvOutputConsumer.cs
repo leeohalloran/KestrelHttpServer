@@ -3,6 +3,7 @@
 
 using System;
 using System.IO.Pipelines;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal.Networking;
 
@@ -14,10 +15,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         private readonly UvStreamHandle _socket;
         private readonly string _connectionId;
         private readonly ILibuvTrace _log;
-        private readonly IPipeReader _pipe;
+        private readonly PipeReader _pipe;
+
+        private long _totalBytesWritten;
 
         public LibuvOutputConsumer(
-            IPipeReader pipe,
+            PipeReader pipe,
             LibuvThread thread,
             UvStreamHandle socket,
             string connectionId,
@@ -28,9 +31,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             _socket = socket;
             _connectionId = connectionId;
             _log = log;
-
-            _pipe.OnWriterCompleted(OnWriterCompleted, this);
         }
+
+        public long TotalBytesWritten => Interlocked.Read(ref _totalBytesWritten);
 
         public async Task WriteOutputAsync()
         {
@@ -46,7 +49,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 }
                 catch
                 {
-                    // Handled in OnWriterCompleted
+                    // Handled in LibuvConnection.Abort()
                     return;
                 }
 
@@ -55,7 +58,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                 try
                 {
-                    if (result.IsCancelled)
+                    if (result.IsCanceled)
                     {
                         break;
                     }
@@ -73,6 +76,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                             var writeResult = await writeReq.WriteAsync(_socket, buffer);
 
+                            // This is not interlocked because there could be a concurrent writer.
+                            // Instead it's to prevent read tearing on 32-bit systems.
+                            Interlocked.Add(ref _totalBytesWritten, buffer.Length);
+
                             LogWriteInfo(writeResult.Status, writeResult.Error);
 
                             if (writeResult.Error != null)
@@ -85,6 +92,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                         {
                             // Make sure we return the writeReq to the pool
                             pool.Return(writeReq);
+
+                            // Null out writeReq so it doesn't get caught by CheckUvReqLeaks.
+                            // It is rooted by a TestSink scope through Pipe continuations in
+                            // ResponseTests.HttpsConnectionClosedWhenResponseDoesNotSatisfyMinimumDataRate
+                            writeReq = null;
                         }
                     }
                     else if (result.IsCompleted)
@@ -94,18 +106,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 }
                 finally
                 {
-                    _pipe.Advance(consumed);
+                    _pipe.AdvanceTo(consumed);
                 }
-            }
-        }
-
-        private static void OnWriterCompleted(Exception ex, object state)
-        {
-            // Cut off writes if the writer is completed with an error. If a write request is pending, this will cancel it.
-            if (ex != null)
-            {
-                var libuvOutputConsumer = (LibuvOutputConsumer)state;
-                libuvOutputConsumer._socket.Dispose();
             }
         }
 
@@ -118,7 +120,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             else
             {
                 // Log connection resets at a lower (Debug) level.
-                if (status == LibuvConstants.ECONNRESET)
+                if (LibuvConstants.IsConnectionReset(status))
                 {
                     _log.ConnectionReset(_connectionId);
                 }

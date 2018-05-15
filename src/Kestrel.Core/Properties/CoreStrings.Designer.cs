@@ -333,18 +333,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
             => GetString("BadRequest_RequestLineTooLong");
 
         /// <summary>
-        /// Request timed out.
+        /// Reading the request headers timed out.
         /// </summary>
-        internal static string BadRequest_RequestTimeout
+        internal static string BadRequest_RequestHeadersTimeout
         {
-            get => GetString("BadRequest_RequestTimeout");
+            get => GetString("BadRequest_RequestHeadersTimeout");
         }
 
         /// <summary>
-        /// Request timed out.
+        /// Reading the request headers timed out.
         /// </summary>
-        internal static string FormatBadRequest_RequestTimeout()
-            => GetString("BadRequest_RequestTimeout");
+        internal static string FormatBadRequest_RequestHeadersTimeout()
+            => GetString("BadRequest_RequestHeadersTimeout");
 
         /// <summary>
         /// Request contains too many headers.
@@ -1073,6 +1073,752 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core
         /// </summary>
         internal static string FormatPositiveNumberOrNullMinDataRateRequired()
             => GetString("PositiveNumberOrNullMinDataRateRequired");
+
+        /// <summary>
+        /// Concurrent timeouts are not supported.
+        /// </summary>
+        internal static string ConcurrentTimeoutsNotSupported
+        {
+            get => GetString("ConcurrentTimeoutsNotSupported");
+        }
+
+        /// <summary>
+        /// Concurrent timeouts are not supported.
+        /// </summary>
+        internal static string FormatConcurrentTimeoutsNotSupported()
+            => GetString("ConcurrentTimeoutsNotSupported");
+
+        /// <summary>
+        /// Timespan must be positive and finite.
+        /// </summary>
+        internal static string PositiveFiniteTimeSpanRequired
+        {
+            get => GetString("PositiveFiniteTimeSpanRequired");
+        }
+
+        /// <summary>
+        /// Timespan must be positive and finite.
+        /// </summary>
+        internal static string FormatPositiveFiniteTimeSpanRequired()
+            => GetString("PositiveFiniteTimeSpanRequired");
+
+        /// <summary>
+        /// An endpoint must be configured to serve at least one protocol.
+        /// </summary>
+        internal static string EndPointRequiresAtLeastOneProtocol
+        {
+            get => GetString("EndPointRequiresAtLeastOneProtocol");
+        }
+
+        /// <summary>
+        /// An endpoint must be configured to serve at least one protocol.
+        /// </summary>
+        internal static string FormatEndPointRequiresAtLeastOneProtocol()
+            => GetString("EndPointRequiresAtLeastOneProtocol");
+
+        /// <summary>
+        /// Using both HTTP/1.x and HTTP/2 on the same endpoint requires the use of TLS.
+        /// </summary>
+        internal static string EndPointRequiresTlsForHttp1AndHttp2
+        {
+            get => GetString("EndPointRequiresTlsForHttp1AndHttp2");
+        }
+
+        /// <summary>
+        /// Using both HTTP/1.x and HTTP/2 on the same endpoint requires the use of TLS.
+        /// </summary>
+        internal static string FormatEndPointRequiresTlsForHttp1AndHttp2()
+            => GetString("EndPointRequiresTlsForHttp1AndHttp2");
+
+        /// <summary>
+        /// HTTP/2 over TLS was not negotiated on an HTTP/2-only endpoint.
+        /// </summary>
+        internal static string EndPointHttp2NotNegotiated
+        {
+            get => GetString("EndPointHttp2NotNegotiated");
+        }
+
+        /// <summary>
+        /// HTTP/2 over TLS was not negotiated on an HTTP/2-only endpoint.
+        /// </summary>
+        internal static string FormatEndPointHttp2NotNegotiated()
+            => GetString("EndPointHttp2NotNegotiated");
+
+        /// <summary>
+        /// A dynamic table size of {size} octets is greater than the configured maximum size of {maxSize} octets.
+        /// </summary>
+        internal static string HPackErrorDynamicTableSizeUpdateTooLarge
+        {
+            get => GetString("HPackErrorDynamicTableSizeUpdateTooLarge");
+        }
+
+        /// <summary>
+        /// A dynamic table size of {size} octets is greater than the configured maximum size of {maxSize} octets.
+        /// </summary>
+        internal static string FormatHPackErrorDynamicTableSizeUpdateTooLarge(object size, object maxSize)
+            => string.Format(CultureInfo.CurrentCulture, GetString("HPackErrorDynamicTableSizeUpdateTooLarge", "size", "maxSize"), size, maxSize);
+
+        /// <summary>
+        /// Index {index} is outside the bounds of the header field table.
+        /// </summary>
+        internal static string HPackErrorIndexOutOfRange
+        {
+            get => GetString("HPackErrorIndexOutOfRange");
+        }
+
+        /// <summary>
+        /// Index {index} is outside the bounds of the header field table.
+        /// </summary>
+        internal static string FormatHPackErrorIndexOutOfRange(object index)
+            => string.Format(CultureInfo.CurrentCulture, GetString("HPackErrorIndexOutOfRange", "index"), index);
+
+        /// <summary>
+        /// Input data could not be fully decoded.
+        /// </summary>
+        internal static string HPackHuffmanErrorIncomplete
+        {
+            get => GetString("HPackHuffmanErrorIncomplete");
+        }
+
+        /// <summary>
+        /// Input data could not be fully decoded.
+        /// </summary>
+        internal static string FormatHPackHuffmanErrorIncomplete()
+            => GetString("HPackHuffmanErrorIncomplete");
+
+        /// <summary>
+        /// Input data contains the EOS symbol.
+        /// </summary>
+        internal static string HPackHuffmanErrorEOS
+        {
+            get => GetString("HPackHuffmanErrorEOS");
+        }
+
+        /// <summary>
+        /// Input data contains the EOS symbol.
+        /// </summary>
+        internal static string FormatHPackHuffmanErrorEOS()
+            => GetString("HPackHuffmanErrorEOS");
+
+        /// <summary>
+        /// The destination buffer is not large enough to store the decoded data.
+        /// </summary>
+        internal static string HPackHuffmanErrorDestinationTooSmall
+        {
+            get => GetString("HPackHuffmanErrorDestinationTooSmall");
+        }
+
+        /// <summary>
+        /// The destination buffer is not large enough to store the decoded data.
+        /// </summary>
+        internal static string FormatHPackHuffmanErrorDestinationTooSmall()
+            => GetString("HPackHuffmanErrorDestinationTooSmall");
+
+        /// <summary>
+        /// Huffman decoding error.
+        /// </summary>
+        internal static string HPackHuffmanError
+        {
+            get => GetString("HPackHuffmanError");
+        }
+
+        /// <summary>
+        /// Huffman decoding error.
+        /// </summary>
+        internal static string FormatHPackHuffmanError()
+            => GetString("HPackHuffmanError");
+
+        /// <summary>
+        /// Decoded string length of {length} octets is greater than the configured maximum length of {maxStringLength} octets.
+        /// </summary>
+        internal static string HPackStringLengthTooLarge
+        {
+            get => GetString("HPackStringLengthTooLarge");
+        }
+
+        /// <summary>
+        /// Decoded string length of {length} octets is greater than the configured maximum length of {maxStringLength} octets.
+        /// </summary>
+        internal static string FormatHPackStringLengthTooLarge(object length, object maxStringLength)
+            => string.Format(CultureInfo.CurrentCulture, GetString("HPackStringLengthTooLarge", "length", "maxStringLength"), length, maxStringLength);
+
+        /// <summary>
+        /// The header block was incomplete and could not be fully decoded.
+        /// </summary>
+        internal static string HPackErrorIncompleteHeaderBlock
+        {
+            get => GetString("HPackErrorIncompleteHeaderBlock");
+        }
+
+        /// <summary>
+        /// The header block was incomplete and could not be fully decoded.
+        /// </summary>
+        internal static string FormatHPackErrorIncompleteHeaderBlock()
+            => GetString("HPackErrorIncompleteHeaderBlock");
+
+        /// <summary>
+        /// The client sent a {frameType} frame with even stream ID {streamId}.
+        /// </summary>
+        internal static string Http2ErrorStreamIdEven
+        {
+            get => GetString("Http2ErrorStreamIdEven");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with even stream ID {streamId}.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamIdEven(object frameType, object streamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamIdEven", "frameType", "streamId"), frameType, streamId);
+
+        /// <summary>
+        /// The client sent a A PUSH_PROMISE frame.
+        /// </summary>
+        internal static string Http2ErrorPushPromiseReceived
+        {
+            get => GetString("Http2ErrorPushPromiseReceived");
+        }
+
+        /// <summary>
+        /// The client sent a A PUSH_PROMISE frame.
+        /// </summary>
+        internal static string FormatHttp2ErrorPushPromiseReceived()
+            => GetString("Http2ErrorPushPromiseReceived");
+
+        /// <summary>
+        /// The client sent a {frameType} frame to stream ID {streamId} before signaling of the header block for stream ID {headersStreamId}.
+        /// </summary>
+        internal static string Http2ErrorHeadersInterleaved
+        {
+            get => GetString("Http2ErrorHeadersInterleaved");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame to stream ID {streamId} before signaling of the header block for stream ID {headersStreamId}.
+        /// </summary>
+        internal static string FormatHttp2ErrorHeadersInterleaved(object frameType, object streamId, object headersStreamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorHeadersInterleaved", "frameType", "streamId", "headersStreamId"), frameType, streamId, headersStreamId);
+
+        /// <summary>
+        /// The client sent a {frameType} frame with stream ID 0.
+        /// </summary>
+        internal static string Http2ErrorStreamIdZero
+        {
+            get => GetString("Http2ErrorStreamIdZero");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with stream ID 0.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamIdZero(object frameType)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamIdZero", "frameType"), frameType);
+
+        /// <summary>
+        /// The client sent a {frameType} frame with stream ID different than 0.
+        /// </summary>
+        internal static string Http2ErrorStreamIdNotZero
+        {
+            get => GetString("Http2ErrorStreamIdNotZero");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with stream ID different than 0.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamIdNotZero(object frameType)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamIdNotZero", "frameType"), frameType);
+
+        /// <summary>
+        /// The client sent a {frameType} frame with padding longer than or with the same length as the sent data.
+        /// </summary>
+        internal static string Http2ErrorPaddingTooLong
+        {
+            get => GetString("Http2ErrorPaddingTooLong");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with padding longer than or with the same length as the sent data.
+        /// </summary>
+        internal static string FormatHttp2ErrorPaddingTooLong(object frameType)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorPaddingTooLong", "frameType"), frameType);
+
+        /// <summary>
+        /// The client sent a {frameType} frame to closed stream ID {streamId}.
+        /// </summary>
+        internal static string Http2ErrorStreamClosed
+        {
+            get => GetString("Http2ErrorStreamClosed");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame to closed stream ID {streamId}.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamClosed(object frameType, object streamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamClosed", "frameType", "streamId"), frameType, streamId);
+
+        /// <summary>
+        /// The client sent a {frameType} frame to stream ID {streamId} which is in the "half-closed (remote) state".
+        /// </summary>
+        internal static string Http2ErrorStreamHalfClosedRemote
+        {
+            get => GetString("Http2ErrorStreamHalfClosedRemote");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame to stream ID {streamId} which is in the "half-closed (remote) state".
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamHalfClosedRemote(object frameType, object streamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamHalfClosedRemote", "frameType", "streamId"), frameType, streamId);
+
+        /// <summary>
+        /// The client sent a {frameType} frame with dependency information that would cause stream ID {streamId} to depend on itself.
+        /// </summary>
+        internal static string Http2ErrorStreamSelfDependency
+        {
+            get => GetString("Http2ErrorStreamSelfDependency");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with dependency information that would cause stream ID {streamId} to depend on itself.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamSelfDependency(object frameType, object streamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamSelfDependency", "frameType", "streamId"), frameType, streamId);
+
+        /// <summary>
+        /// The client sent a {frameType} frame with length different than {expectedLength}.
+        /// </summary>
+        internal static string Http2ErrorUnexpectedFrameLength
+        {
+            get => GetString("Http2ErrorUnexpectedFrameLength");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame with length different than {expectedLength}.
+        /// </summary>
+        internal static string FormatHttp2ErrorUnexpectedFrameLength(object frameType, object expectedLength)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorUnexpectedFrameLength", "frameType", "expectedLength"), frameType, expectedLength);
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with a length that is not a multiple of 6.
+        /// </summary>
+        internal static string Http2ErrorSettingsLengthNotMultipleOfSix
+        {
+            get => GetString("Http2ErrorSettingsLengthNotMultipleOfSix");
+        }
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with a length that is not a multiple of 6.
+        /// </summary>
+        internal static string FormatHttp2ErrorSettingsLengthNotMultipleOfSix()
+            => GetString("Http2ErrorSettingsLengthNotMultipleOfSix");
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with ACK set and length different than 0.
+        /// </summary>
+        internal static string Http2ErrorSettingsAckLengthNotZero
+        {
+            get => GetString("Http2ErrorSettingsAckLengthNotZero");
+        }
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with ACK set and length different than 0.
+        /// </summary>
+        internal static string FormatHttp2ErrorSettingsAckLengthNotZero()
+            => GetString("Http2ErrorSettingsAckLengthNotZero");
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with a value for parameter {parameter} that is out of range.
+        /// </summary>
+        internal static string Http2ErrorSettingsParameterOutOfRange
+        {
+            get => GetString("Http2ErrorSettingsParameterOutOfRange");
+        }
+
+        /// <summary>
+        /// The client sent a SETTINGS frame with a value for parameter {parameter} that is out of range.
+        /// </summary>
+        internal static string FormatHttp2ErrorSettingsParameterOutOfRange(object parameter)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorSettingsParameterOutOfRange", "parameter"), parameter);
+
+        /// <summary>
+        /// The client sent a WINDOW_UPDATE frame with a window size increment of 0.
+        /// </summary>
+        internal static string Http2ErrorWindowUpdateIncrementZero
+        {
+            get => GetString("Http2ErrorWindowUpdateIncrementZero");
+        }
+
+        /// <summary>
+        /// The client sent a WINDOW_UPDATE frame with a window size increment of 0.
+        /// </summary>
+        internal static string FormatHttp2ErrorWindowUpdateIncrementZero()
+            => GetString("Http2ErrorWindowUpdateIncrementZero");
+
+        /// <summary>
+        /// The client sent a CONTINUATION frame not preceded by a HEADERS frame.
+        /// </summary>
+        internal static string Http2ErrorContinuationWithNoHeaders
+        {
+            get => GetString("Http2ErrorContinuationWithNoHeaders");
+        }
+
+        /// <summary>
+        /// The client sent a CONTINUATION frame not preceded by a HEADERS frame.
+        /// </summary>
+        internal static string FormatHttp2ErrorContinuationWithNoHeaders()
+            => GetString("Http2ErrorContinuationWithNoHeaders");
+
+        /// <summary>
+        /// The client sent a {frameType} frame to idle stream ID {streamId}.
+        /// </summary>
+        internal static string Http2ErrorStreamIdle
+        {
+            get => GetString("Http2ErrorStreamIdle");
+        }
+
+        /// <summary>
+        /// The client sent a {frameType} frame to idle stream ID {streamId}.
+        /// </summary>
+        internal static string FormatHttp2ErrorStreamIdle(object frameType, object streamId)
+            => string.Format(CultureInfo.CurrentCulture, GetString("Http2ErrorStreamIdle", "frameType", "streamId"), frameType, streamId);
+
+        /// <summary>
+        /// The client sent trailers containing one or more pseudo-header fields.
+        /// </summary>
+        internal static string Http2ErrorTrailersContainPseudoHeaderField
+        {
+            get => GetString("Http2ErrorTrailersContainPseudoHeaderField");
+        }
+
+        /// <summary>
+        /// The client sent trailers containing one or more pseudo-header fields.
+        /// </summary>
+        internal static string FormatHttp2ErrorTrailersContainPseudoHeaderField()
+            => GetString("Http2ErrorTrailersContainPseudoHeaderField");
+
+        /// <summary>
+        /// The client sent a header with uppercase characters in its name.
+        /// </summary>
+        internal static string Http2ErrorHeaderNameUppercase
+        {
+            get => GetString("Http2ErrorHeaderNameUppercase");
+        }
+
+        /// <summary>
+        /// The client sent a header with uppercase characters in its name.
+        /// </summary>
+        internal static string FormatHttp2ErrorHeaderNameUppercase()
+            => GetString("Http2ErrorHeaderNameUppercase");
+
+        /// <summary>
+        /// The client sent a trailer with uppercase characters in its name.
+        /// </summary>
+        internal static string Http2ErrorTrailerNameUppercase
+        {
+            get => GetString("Http2ErrorTrailerNameUppercase");
+        }
+
+        /// <summary>
+        /// The client sent a trailer with uppercase characters in its name.
+        /// </summary>
+        internal static string FormatHttp2ErrorTrailerNameUppercase()
+            => GetString("Http2ErrorTrailerNameUppercase");
+
+        /// <summary>
+        /// The client sent a HEADERS frame containing trailers without setting the END_STREAM flag.
+        /// </summary>
+        internal static string Http2ErrorHeadersWithTrailersNoEndStream
+        {
+            get => GetString("Http2ErrorHeadersWithTrailersNoEndStream");
+        }
+
+        /// <summary>
+        /// The client sent a HEADERS frame containing trailers without setting the END_STREAM flag.
+        /// </summary>
+        internal static string FormatHttp2ErrorHeadersWithTrailersNoEndStream()
+            => GetString("Http2ErrorHeadersWithTrailersNoEndStream");
+
+        /// <summary>
+        /// Request headers missing one or more mandatory pseudo-header fields.
+        /// </summary>
+        internal static string Http2ErrorMissingMandatoryPseudoHeaderFields
+        {
+            get => GetString("Http2ErrorMissingMandatoryPseudoHeaderFields");
+        }
+
+        /// <summary>
+        /// Request headers missing one or more mandatory pseudo-header fields.
+        /// </summary>
+        internal static string FormatHttp2ErrorMissingMandatoryPseudoHeaderFields()
+            => GetString("Http2ErrorMissingMandatoryPseudoHeaderFields");
+
+        /// <summary>
+        /// Pseudo-header field found in request headers after regular header fields.
+        /// </summary>
+        internal static string Http2ErrorPseudoHeaderFieldAfterRegularHeaders
+        {
+            get => GetString("Http2ErrorPseudoHeaderFieldAfterRegularHeaders");
+        }
+
+        /// <summary>
+        /// Pseudo-header field found in request headers after regular header fields.
+        /// </summary>
+        internal static string FormatHttp2ErrorPseudoHeaderFieldAfterRegularHeaders()
+            => GetString("Http2ErrorPseudoHeaderFieldAfterRegularHeaders");
+
+        /// <summary>
+        /// Request headers contain unknown pseudo-header field.
+        /// </summary>
+        internal static string Http2ErrorUnknownPseudoHeaderField
+        {
+            get => GetString("Http2ErrorUnknownPseudoHeaderField");
+        }
+
+        /// <summary>
+        /// Request headers contain unknown pseudo-header field.
+        /// </summary>
+        internal static string FormatHttp2ErrorUnknownPseudoHeaderField()
+            => GetString("Http2ErrorUnknownPseudoHeaderField");
+
+        /// <summary>
+        /// Request headers contain response-specific pseudo-header field.
+        /// </summary>
+        internal static string Http2ErrorResponsePseudoHeaderField
+        {
+            get => GetString("Http2ErrorResponsePseudoHeaderField");
+        }
+
+        /// <summary>
+        /// Request headers contain response-specific pseudo-header field.
+        /// </summary>
+        internal static string FormatHttp2ErrorResponsePseudoHeaderField()
+            => GetString("Http2ErrorResponsePseudoHeaderField");
+
+        /// <summary>
+        /// Request headers contain duplicate pseudo-header field.
+        /// </summary>
+        internal static string Http2ErrorDuplicatePseudoHeaderField
+        {
+            get => GetString("Http2ErrorDuplicatePseudoHeaderField");
+        }
+
+        /// <summary>
+        /// Request headers contain duplicate pseudo-header field.
+        /// </summary>
+        internal static string FormatHttp2ErrorDuplicatePseudoHeaderField()
+            => GetString("Http2ErrorDuplicatePseudoHeaderField");
+
+        /// <summary>
+        /// Request headers contain connection-specific header field.
+        /// </summary>
+        internal static string Http2ErrorConnectionSpecificHeaderField
+        {
+            get => GetString("Http2ErrorConnectionSpecificHeaderField");
+        }
+
+        /// <summary>
+        /// Request headers contain connection-specific header field.
+        /// </summary>
+        internal static string FormatHttp2ErrorConnectionSpecificHeaderField()
+            => GetString("Http2ErrorConnectionSpecificHeaderField");
+
+        /// <summary>
+        /// Unable to configure default https bindings because no IDefaultHttpsProvider service was provided.
+        /// </summary>
+        internal static string UnableToConfigureHttpsBindings
+        {
+            get => GetString("UnableToConfigureHttpsBindings");
+        }
+
+        /// <summary>
+        /// Unable to configure default https bindings because no IDefaultHttpsProvider service was provided.
+        /// </summary>
+        internal static string FormatUnableToConfigureHttpsBindings()
+            => GetString("UnableToConfigureHttpsBindings");
+
+        /// <summary>
+        /// Failed to authenticate HTTPS connection.
+        /// </summary>
+        internal static string AuthenticationFailed
+        {
+            get => GetString("AuthenticationFailed");
+        }
+
+        /// <summary>
+        /// Failed to authenticate HTTPS connection.
+        /// </summary>
+        internal static string FormatAuthenticationFailed()
+            => GetString("AuthenticationFailed");
+
+        /// <summary>
+        /// Authentication of the HTTPS connection timed out.
+        /// </summary>
+        internal static string AuthenticationTimedOut
+        {
+            get => GetString("AuthenticationTimedOut");
+        }
+
+        /// <summary>
+        /// Authentication of the HTTPS connection timed out.
+        /// </summary>
+        internal static string FormatAuthenticationTimedOut()
+            => GetString("AuthenticationTimedOut");
+
+        /// <summary>
+        /// Certificate {thumbprint} cannot be used as an SSL server certificate. It has an Extended Key Usage extension but the usages do not include Server Authentication (OID 1.3.6.1.5.5.7.3.1).
+        /// </summary>
+        internal static string InvalidServerCertificateEku
+        {
+            get => GetString("InvalidServerCertificateEku");
+        }
+
+        /// <summary>
+        /// Certificate {thumbprint} cannot be used as an SSL server certificate. It has an Extended Key Usage extension but the usages do not include Server Authentication (OID 1.3.6.1.5.5.7.3.1).
+        /// </summary>
+        internal static string FormatInvalidServerCertificateEku(object thumbprint)
+            => string.Format(CultureInfo.CurrentCulture, GetString("InvalidServerCertificateEku", "thumbprint"), thumbprint);
+
+        /// <summary>
+        /// Value must be a positive TimeSpan.
+        /// </summary>
+        internal static string PositiveTimeSpanRequired1
+        {
+            get => GetString("PositiveTimeSpanRequired1");
+        }
+
+        /// <summary>
+        /// Value must be a positive TimeSpan.
+        /// </summary>
+        internal static string FormatPositiveTimeSpanRequired1()
+            => GetString("PositiveTimeSpanRequired1");
+
+        /// <summary>
+        /// The server certificate parameter is required.
+        /// </summary>
+        internal static string ServerCertificateRequired
+        {
+            get => GetString("ServerCertificateRequired");
+        }
+
+        /// <summary>
+        /// The server certificate parameter is required.
+        /// </summary>
+        internal static string FormatServerCertificateRequired()
+            => GetString("ServerCertificateRequired");
+
+        /// <summary>
+        /// No listening endpoints were configured. Binding to {address0} and {address1} by default.
+        /// </summary>
+        internal static string BindingToDefaultAddresses
+        {
+            get => GetString("BindingToDefaultAddresses");
+        }
+
+        /// <summary>
+        /// No listening endpoints were configured. Binding to {address0} and {address1} by default.
+        /// </summary>
+        internal static string FormatBindingToDefaultAddresses(object address0, object address1)
+            => string.Format(CultureInfo.CurrentCulture, GetString("BindingToDefaultAddresses", "address0", "address1"), address0, address1);
+
+        /// <summary>
+        /// The requested certificate {subject} could not be found in {storeLocation}/{storeName} with AllowInvalid setting: {allowInvalid}.
+        /// </summary>
+        internal static string CertNotFoundInStore
+        {
+            get => GetString("CertNotFoundInStore");
+        }
+
+        /// <summary>
+        /// The requested certificate {subject} could not be found in {storeLocation}/{storeName} with AllowInvalid setting: {allowInvalid}.
+        /// </summary>
+        internal static string FormatCertNotFoundInStore(object subject, object storeLocation, object storeName, object allowInvalid)
+            => string.Format(CultureInfo.CurrentCulture, GetString("CertNotFoundInStore", "subject", "storeLocation", "storeName", "allowInvalid"), subject, storeLocation, storeName, allowInvalid);
+
+        /// <summary>
+        /// The endpoint {endpointName} is missing the required 'Url' parameter.
+        /// </summary>
+        internal static string EndpointMissingUrl
+        {
+            get => GetString("EndpointMissingUrl");
+        }
+
+        /// <summary>
+        /// The endpoint {endpointName} is missing the required 'Url' parameter.
+        /// </summary>
+        internal static string FormatEndpointMissingUrl(object endpointName)
+            => string.Format(CultureInfo.CurrentCulture, GetString("EndpointMissingUrl", "endpointName"), endpointName);
+
+        /// <summary>
+        /// Unable to configure HTTPS endpoint. No server certificate was specified, and the default developer certificate could not be found.
+        /// To generate a developer certificate run 'dotnet dev-certs https'. To trust the certificate (Windows and macOS only) run 'dotnet dev-certs https --trust'.
+        /// For more information on configuring HTTPS see https://go.microsoft.com/fwlink/?linkid=848054.
+        /// </summary>
+        internal static string NoCertSpecifiedNoDevelopmentCertificateFound
+        {
+            get => GetString("NoCertSpecifiedNoDevelopmentCertificateFound");
+        }
+
+        /// <summary>
+        /// Unable to configure HTTPS endpoint. No server certificate was specified, and the default developer certificate could not be found.
+        /// To generate a developer certificate run 'dotnet dev-certs https'. To trust the certificate (Windows and macOS only) run 'dotnet dev-certs https --trust'.
+        /// For more information on configuring HTTPS see https://go.microsoft.com/fwlink/?linkid=848054.
+        /// </summary>
+        internal static string FormatNoCertSpecifiedNoDevelopmentCertificateFound()
+            => GetString("NoCertSpecifiedNoDevelopmentCertificateFound");
+
+        /// <summary>
+        /// The endpoint {endpointName} specified multiple certificate sources.
+        /// </summary>
+        internal static string MultipleCertificateSources
+        {
+            get => GetString("MultipleCertificateSources");
+        }
+
+        /// <summary>
+        /// The endpoint {endpointName} specified multiple certificate sources.
+        /// </summary>
+        internal static string FormatMultipleCertificateSources(object endpointName)
+            => string.Format(CultureInfo.CurrentCulture, GetString("MultipleCertificateSources", "endpointName"), endpointName);
+
+        /// <summary>
+        /// HTTP/2 support is experimental, see https://go.microsoft.com/fwlink/?linkid=866785 to enable it.
+        /// </summary>
+        internal static string Http2NotSupported
+        {
+            get => GetString("Http2NotSupported");
+        }
+
+        /// <summary>
+        /// HTTP/2 support is experimental, see https://go.microsoft.com/fwlink/?linkid=866785 to enable it.
+        /// </summary>
+        internal static string FormatHttp2NotSupported()
+            => GetString("Http2NotSupported");
+
+        /// <summary>
+        /// Cannot write to the response body, the response has completed.
+        /// </summary>
+        internal static string WritingToResponseBodyAfterResponseCompleted
+        {
+            get => GetString("WritingToResponseBodyAfterResponseCompleted");
+        }
+
+        /// <summary>
+        /// Cannot write to the response body, the response has completed.
+        /// </summary>
+        internal static string FormatWritingToResponseBodyAfterResponseCompleted()
+            => GetString("WritingToResponseBodyAfterResponseCompleted");
+
+        /// <summary>
+        /// Reading the request body timed out due to data arriving too slowly. See MinRequestBodyDataRate.
+        /// </summary>
+        internal static string BadRequest_RequestBodyTimeout
+        {
+            get => GetString("BadRequest_RequestBodyTimeout");
+        }
+
+        /// <summary>
+        /// Reading the request body timed out due to data arriving too slowly. See MinRequestBodyDataRate.
+        /// </summary>
+        internal static string FormatBadRequest_RequestBodyTimeout()
+            => GetString("BadRequest_RequestBodyTimeout");
 
         private static string GetString(string name, params string[] formatterNames)
         {

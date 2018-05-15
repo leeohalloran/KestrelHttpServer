@@ -2,11 +2,13 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
@@ -25,17 +27,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
         public async Task ConnectionsGetRoundRobinedToSecondaryListeners()
         {
             var libuv = new LibuvFunctions();
+
             var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
 
             var serviceContextPrimary = new TestServiceContext();
             var transportContextPrimary = new TestLibuvTransportContext();
-            transportContextPrimary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")));
+            var builderPrimary = new ConnectionBuilder();
+            builderPrimary.UseHttpServer(serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")), HttpProtocols.Http1);
+            transportContextPrimary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextPrimary, builderPrimary.Build());
 
             var serviceContextSecondary = new TestServiceContext();
+            var builderSecondary = new ConnectionBuilder();
+            builderSecondary.UseHttpServer(serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")), HttpProtocols.Http1);
             var transportContextSecondary = new TestLibuvTransportContext();
-            transportContextSecondary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")));
+            transportContextSecondary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextSecondary, builderSecondary.Build());
 
             var libuvTransport = new LibuvTransport(libuv, transportContextPrimary, listenOptions);
 
@@ -60,7 +65,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             var listenerSecondary = new ListenerSecondary(transportContextSecondary);
             await listenerSecondary.StartAsync(pipeName, pipeMessage, listenOptions, libuvThreadSecondary);
 
-            var maxWait = Task.Delay(TimeSpan.FromSeconds(30));
+            var maxWait = Task.Delay(TestConstants.DefaultTimeout);
             // wait for ListenerPrimary.ReadCallback to add the secondary pipe
             while (listenerPrimary.UvPipeCount == listenerCount)
             {
@@ -80,10 +85,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             Assert.Equal("Primary", await HttpClientSlim.GetStringAsync(address));
 
             await listenerSecondary.DisposeAsync();
-            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(5));
 
             await listenerPrimary.DisposeAsync();
-            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(5));
         }
 
         // https://github.com/aspnet/KestrelHttpServer/issues/1182
@@ -92,24 +97,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
         {
             var libuv = new LibuvFunctions();
             var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
-
             var logger = new TestApplicationErrorLogger();
 
             var serviceContextPrimary = new TestServiceContext();
+            var builderPrimary = new ConnectionBuilder();
+            builderPrimary.UseHttpServer(serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")), HttpProtocols.Http1);
             var transportContextPrimary = new TestLibuvTransportContext() { Log = new LibuvTrace(logger) };
-            transportContextPrimary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")));
+            transportContextPrimary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextPrimary, builderPrimary.Build());
 
             var serviceContextSecondary = new TestServiceContext
             {
                 DateHeaderValueManager = serviceContextPrimary.DateHeaderValueManager,
                 ServerOptions = serviceContextPrimary.ServerOptions,
-                ThreadPool = serviceContextPrimary.ThreadPool,
-                HttpParserFactory = serviceContextPrimary.HttpParserFactory,
+                Scheduler = serviceContextPrimary.Scheduler,
+                HttpParser = serviceContextPrimary.HttpParser,
             };
+            var builderSecondary = new ConnectionBuilder();
+            builderSecondary.UseHttpServer(serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")), HttpProtocols.Http1);
             var transportContextSecondary = new TestLibuvTransportContext();
-            transportContextSecondary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")));
+            transportContextSecondary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextSecondary, builderSecondary.Build());
 
             var libuvTransport = new LibuvTransport(libuv, transportContextPrimary, listenOptions);
 
@@ -134,7 +140,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             Assert.Equal("Primary", await HttpClientSlim.GetStringAsync(address));
 
             // Create a pipe connection and keep it open without sending any data
-            var connectTcs = new TaskCompletionSource<object>();
+            var connectTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             var connectionTrace = new LibuvTrace(new TestApplicationErrorLogger());
             var pipe = new UvPipeHandle(connectionTrace);
 
@@ -185,10 +191,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             Assert.Equal("Primary", await HttpClientSlim.GetStringAsync(address));
 
             await listenerSecondary.DisposeAsync();
-            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(5));
 
             await listenerPrimary.DisposeAsync();
-            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(1, logger.TotalErrorsLogged);
             var errorMessage = logger.Messages.First(m => m.LogLevel == LogLevel.Error);
@@ -205,20 +211,22 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             var logger = new TestApplicationErrorLogger();
 
             var serviceContextPrimary = new TestServiceContext();
+            var builderPrimary = new ConnectionBuilder();
+            builderPrimary.UseHttpServer(serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")), HttpProtocols.Http1);
             var transportContextPrimary = new TestLibuvTransportContext() { Log = new LibuvTrace(logger) };
-            transportContextPrimary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextPrimary, new DummyApplication(c => c.Response.WriteAsync("Primary")));
+            transportContextPrimary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextPrimary, builderPrimary.Build());
 
             var serviceContextSecondary = new TestServiceContext
             {
                 DateHeaderValueManager = serviceContextPrimary.DateHeaderValueManager,
                 ServerOptions = serviceContextPrimary.ServerOptions,
-                ThreadPool = serviceContextPrimary.ThreadPool,
-                HttpParserFactory = serviceContextPrimary.HttpParserFactory,
+                Scheduler = serviceContextPrimary.Scheduler,
+                HttpParser = serviceContextPrimary.HttpParser,
             };
+            var builderSecondary = new ConnectionBuilder();
+            builderSecondary.UseHttpServer(serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")), HttpProtocols.Http1);
             var transportContextSecondary = new TestLibuvTransportContext();
-            transportContextSecondary.ConnectionHandler = new ConnectionHandler<HttpContext>(
-                listenOptions, serviceContextSecondary, new DummyApplication(c => c.Response.WriteAsync("Secondary")));
+            transportContextSecondary.ConnectionDispatcher = new ConnectionDispatcher(serviceContextSecondary, builderSecondary.Build());
 
             var libuvTransport = new LibuvTransport(libuv, transportContextPrimary, listenOptions);
 
@@ -250,10 +258,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
             Assert.Equal("Primary", await HttpClientSlim.GetStringAsync(address));
 
             await listenerSecondary.DisposeAsync();
-            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadSecondary.StopAsync(TimeSpan.FromSeconds(5));
 
             await listenerPrimary.DisposeAsync();
-            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(1));
+            await libuvThreadPrimary.StopAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(1, logger.TotalErrorsLogged);
             var errorMessage = logger.Messages.First(m => m.LogLevel == LogLevel.Error);
@@ -299,6 +307,35 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Tests
                 : "http";
 
             return new Uri($"{scheme}://{options.IPEndPoint}");
+        }
+
+        private class ConnectionBuilder : IConnectionBuilder
+        {
+            private readonly List<Func<ConnectionDelegate, ConnectionDelegate>> _components = new List<Func<ConnectionDelegate, ConnectionDelegate>>();
+
+            public IServiceProvider ApplicationServices { get; set; }
+
+            public IConnectionBuilder Use(Func<ConnectionDelegate, ConnectionDelegate> middleware)
+            {
+                _components.Add(middleware);
+                return this;
+            }
+
+            public ConnectionDelegate Build()
+            {
+                ConnectionDelegate app = context =>
+                {
+                    return Task.CompletedTask;
+                };
+
+                for (int i = _components.Count - 1; i >= 0; i--)
+                {
+                    var component = _components[i];
+                    app = component(app);
+                }
+
+                return app;
+            }
         }
     }
 }

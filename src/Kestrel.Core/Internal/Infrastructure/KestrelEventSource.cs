@@ -2,12 +2,8 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System.Diagnostics.Tracing;
-using System.Net;
 using System.Runtime.CompilerServices;
-using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Protocols;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
-using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 {
@@ -29,15 +25,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         // - Avoid renaming methods or parameters marked with EventAttribute. EventSource uses these to form the event object.
 
         [NonEvent]
-        public void ConnectionStart(FrameConnection connection)
+        public void ConnectionStart(HttpConnection connection)
         {
             // avoid allocating strings unless this event source is enabled
             if (IsEnabled())
             {
                 ConnectionStart(
                     connection.ConnectionId,
-                    connection.LocalEndPoint.ToString(),
-                    connection.RemoteEndPoint.ToString());
+                    connection.LocalEndPoint?.ToString(),
+                    connection.RemoteEndPoint?.ToString());
             }
         }
 
@@ -56,7 +52,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         }
 
         [NonEvent]
-        public void ConnectionStop(FrameConnection connection)
+        public void ConnectionStop(HttpConnection connection)
         {
             if (IsEnabled())
             {
@@ -82,12 +78,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         }
 
         [NonEvent]
-        public void RequestStart(Frame frame)
+        public void RequestStart(HttpProtocol httpProtocol)
         {
             // avoid allocating the trace identifier unless logging is enabled
             if (IsEnabled())
             {
-                RequestStart(frame.ConnectionIdFeature, frame.TraceIdentifier);
+                RequestStart(httpProtocol.ConnectionIdFeature, httpProtocol.TraceIdentifier);
             }
         }
 
@@ -99,12 +95,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         }
 
         [NonEvent]
-        public void RequestStop(Frame frame)
+        public void RequestStop(HttpProtocol httpProtocol)
         {
             // avoid allocating the trace identifier unless logging is enabled
             if (IsEnabled())
             {
-                RequestStop(frame.ConnectionIdFeature, frame.TraceIdentifier);
+                RequestStop(httpProtocol.ConnectionIdFeature, httpProtocol.TraceIdentifier);
             }
         }
 

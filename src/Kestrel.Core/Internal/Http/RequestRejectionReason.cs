@@ -22,7 +22,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         HeadersExceedMaxTotalSize,
         TooManyHeaders,
         RequestBodyTooLarge,
-        RequestTimeout,
+        RequestHeadersTimeout,
+        RequestBodyTimeout,
         FinalTransferCodingNotChunked,
         LengthRequired,
         LengthRequiredHttp10,
@@ -32,5 +33,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         MultipleHostHeaders,
         InvalidHostHeader,
         UpgradeRequestCannotHavePayload,
+        RequestBodyExceedsContentLength
     }
 }

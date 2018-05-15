@@ -4,15 +4,20 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 {
     public static partial class HttpUtilities
     {
+        private static readonly bool[] HostCharValidity = new bool[127];
+
         public const string Http10Version = "HTTP/1.0";
         public const string Http11Version = "HTTP/1.1";
+        public const string Http2Version = "HTTP/2";
 
         public const string HttpUriScheme = "http://";
         public const string HttpsUriScheme = "https://";
@@ -25,6 +30,35 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 
         private const ulong _http10VersionLong = 3471766442030158920; // GetAsciiStringAsLong("HTTP/1.0"); const results in better codegen
         private const ulong _http11VersionLong = 3543824036068086856; // GetAsciiStringAsLong("HTTP/1.1"); const results in better codegen
+
+        // Only called from the static constructor
+        private static void InitializeHostCharValidity()
+        {
+            // Matches Http.Sys
+            // Matches RFC 3986 except "*" / "+" / "," / ";" / "=" and "%" HEXDIG HEXDIG which are not allowed by Http.Sys
+            HostCharValidity['!'] = true;
+            HostCharValidity['$'] = true;
+            HostCharValidity['&'] = true;
+            HostCharValidity['\''] = true;
+            HostCharValidity['('] = true;
+            HostCharValidity[')'] = true;
+            HostCharValidity['-'] = true;
+            HostCharValidity['.'] = true;
+            HostCharValidity['_'] = true;
+            HostCharValidity['~'] = true;
+            for (var ch = '0'; ch <= '9'; ch++)
+            {
+                HostCharValidity[ch] = true;
+            }
+            for (var ch = 'A'; ch <= 'Z'; ch++)
+            {
+                HostCharValidity[ch] = true;
+            }
+            for (var ch = 'a'; ch <= 'z'; ch++)
+            {
+                HostCharValidity[ch] = true;
+            }
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void SetKnownMethod(ulong mask, ulong knownMethodUlong, HttpMethod knownMethod, int length)
@@ -90,7 +124,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
             var asciiString = new string('\0', span.Length);
 
             fixed (char* output = asciiString)
-            fixed (byte* buffer = &span.DangerousGetPinnableReference())
+            fixed (byte* buffer = &MemoryMarshal.GetReference(span))
             {
                 // This version if AsciiUtilities returns null if there are any null (0 byte) characters
                 // in the string
@@ -135,7 +169,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe bool GetKnownMethod(this Span<byte> span, out HttpMethod method, out int length)
         {
-            fixed (byte* data = &span.DangerousGetPinnableReference())
+            fixed (byte* data = &MemoryMarshal.GetReference(span))
             {
                 method = GetKnownMethod(data, span.Length, out length);
                 return method != HttpMethod.Custom;
@@ -176,6 +210,87 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         }
 
         /// <summary>
+        /// Parses string <paramref name="value"/> for a known HTTP method.
+        /// </summary>
+        /// <remarks>
+        /// A "known HTTP method" can be an HTTP method name defined in the HTTP/1.1 RFC.
+        /// The Known Methods (CONNECT, DELETE, GET, HEAD, PATCH, POST, PUT, OPTIONS, TRACE)
+        /// </remarks>
+        /// <returns><see cref="HttpMethod"/></returns>
+        public static HttpMethod GetKnownMethod(string value)
+        {
+            // Called by http/2
+            if (value == null)
+            {
+                throw new ArgumentNullException(nameof(value));
+            }
+
+            var length = value.Length;
+            if (length == 0)
+            {
+                throw new ArgumentException(nameof(value));
+            }
+
+            // Start with custom and assign if known method is found
+            var method = HttpMethod.Custom;
+
+            var firstChar = value[0];
+            if (length == 3)
+            {
+                if (firstChar == 'G' && string.Equals(value, HttpMethods.Get, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Get;
+                }
+                else if (firstChar == 'P' && string.Equals(value, HttpMethods.Put, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Put;
+                }
+            }
+            else if (length == 4)
+            {
+                if (firstChar == 'H' && string.Equals(value, HttpMethods.Head, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Head;
+                }
+                else if(firstChar == 'P' && string.Equals(value, HttpMethods.Post, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Post;
+                }
+            }
+            else if (length == 5)
+            {
+                if (firstChar == 'T' && string.Equals(value, HttpMethods.Trace, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Trace;
+                }
+                else if(firstChar == 'P' && string.Equals(value, HttpMethods.Patch, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Patch;
+                }
+            }
+            else if (length == 6)
+            {
+                if (firstChar == 'D' && string.Equals(value, HttpMethods.Delete, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Delete;
+                }
+            }
+            else if (length == 7)
+            {
+                if (firstChar == 'C' && string.Equals(value, HttpMethods.Connect, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Connect;
+                }
+                else if (firstChar == 'O' && string.Equals(value, HttpMethods.Options, StringComparison.Ordinal))
+                {
+                    method = HttpMethod.Options;
+                }
+            }
+
+            return method;
+        }
+
+        /// <summary>
         /// Checks 9 bytes from <paramref name="span"/>  correspond to a known HTTP version.
         /// </summary>
         /// <remarks>
@@ -189,7 +304,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe bool GetKnownVersion(this Span<byte> span, out HttpVersion knownVersion, out byte length)
         {
-            fixed (byte* data = &span.DangerousGetPinnableReference())
+            fixed (byte* data = &MemoryMarshal.GetReference(span))
             {
                 knownVersion = GetKnownVersion(data, span.Length);
                 if (knownVersion != HttpVersion.Unknown)
@@ -248,7 +363,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe bool GetKnownHttpScheme(this Span<byte> span, out HttpScheme knownScheme)
         {
-            fixed (byte* data = &span.DangerousGetPinnableReference())
+            fixed (byte* data = &MemoryMarshal.GetReference(span))
             {
                 return GetKnownHttpScheme(data, span.Length, out knownScheme);
             }
@@ -309,6 +424,118 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
                 default:
                     return null;
             }
+        }
+
+        public static void ValidateHostHeader(string hostText)
+        {
+            if (string.IsNullOrEmpty(hostText))
+            {
+                // The spec allows empty values
+                return;
+            }
+
+            var firstChar = hostText[0];
+            if (firstChar == '[')
+            {
+                // Tail call
+                ValidateIPv6Host(hostText);
+            }
+            else
+            {
+                if (firstChar == ':')
+                {
+                    // Only a port
+                    BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+                }
+
+                // Enregister array
+                var hostCharValidity = HostCharValidity;
+                for (var i = 0; i < hostText.Length; i++)
+                {
+                    if (!hostCharValidity[hostText[i]])
+                    {
+                        // Tail call
+                        ValidateHostPort(hostText, i); 
+                        return;
+                    }
+                }
+            }
+        }
+
+        // The lead '[' was already checked
+        private static void ValidateIPv6Host(string hostText)
+        {
+            for (var i = 1; i < hostText.Length; i++)
+            {
+                var ch = hostText[i];
+                if (ch == ']')
+                {
+                    // [::1] is the shortest valid IPv6 host
+                    if (i < 4)
+                    {
+                        BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+                    }
+                    else if (i + 1 < hostText.Length)
+                    {
+                        // Tail call
+                        ValidateHostPort(hostText, i + 1);
+                    }
+                    return;
+                }
+
+                if (!IsHex(ch) && ch != ':' && ch != '.')
+                {
+                    BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+                }
+            }
+
+            // Must contain a ']'
+            BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+        }
+
+        private static void ValidateHostPort(string hostText, int offset)
+        {
+            var firstChar = hostText[offset];
+            offset++;
+            if (firstChar != ':' || offset == hostText.Length)
+            {
+                // Must have at least one number after the colon if present.
+                BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+            }
+
+            for (var i = offset; i < hostText.Length; i++)
+            {
+                if (!IsNumeric(hostText[i]))
+                {
+                    BadHttpRequestException.Throw(RequestRejectionReason.InvalidHostHeader, hostText);
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsNumeric(char ch)
+        {
+            // '0' <= ch && ch <= '9'
+            // (uint)(ch - '0') <= (uint)('9' - '0')
+
+            // Subtract start of range '0'
+            // Cast to uint to change negative numbers to large numbers
+            // Check if less than 10 representing chars '0' - '9'
+            return (uint)(ch - '0') < 10u;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsHex(char ch)
+        {
+            return IsNumeric(ch)
+                // || ('a' <= ch && ch <= 'f')
+                // || ('A' <= ch && ch <= 'F');
+
+                // Lowercase indiscriminately (or with 32)
+                // Subtract start of range 'a'
+                // Cast to uint to change negative numbers to large numbers
+                // Check if less than 6 representing chars 'a' - 'f'
+                || (uint)((ch | 32) - 'a') < 6u;
         }
     }
 }
